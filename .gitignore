@@ -1,27 +1,57 @@
-# Gradle / Android
+# ===== Android / Gradle =====
 *.iml
-.gradle
-.kotlin
+.gradle/
+.kotlin/
 build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+gradle-app.setting
+.gradletasknamecache
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-dist/
+# 构建产物 / 打包输出（含 release 与本地交付包）
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+output-metadata.json
+/release/
+/dist/
+/out/
+*.hprof
 
-# IDE / 系统
-/.idea
-.DS_Store
-Thumbs.db
-
-# 机密与本地部署目录（不入库）
+# 签名与密钥：一律不入库（keystore 本体放在仓库外）
 keystore.properties
 *.jks
 *.keystore
 /keystore/
+/*-keystore/
+
+# ProGuard / R8 映射（含符号信息，按需手动归档）
+/app/release/
+/app/debug/
+mapping.txt
+seeds.txt
+usage.txt
+
+# Room：app/schemas/** 需要入库（迁移测试依赖它），不要忽略
+
+# 本机部署 / 备份目录（不入库）
 /backup/
+/local/
+
+# ===== Python（配套脚本/服务端）=====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.spec
+
+# ===== IDE / 系统 =====
+/.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
