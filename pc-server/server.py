@@ -455,6 +455,30 @@ def check_token(request: Request) -> None:
         raise HTTPException(401, "配对令牌不对")
 
 
+def reconcile_diff(server_boxes: list[dict], reported: list[dict]) -> dict:
+    """纯逻辑：对账差异计算，不碰数据库，便于单元测试。
+
+    server_boxes / reported 每项含 uid、rev、status。
+    - missing: 服务端有、PDA 未上报（PDA 缺箱，需补入）
+    - extra:   PDA 有、服务端无（源表删行或 PDA 误入库，仅报告不自动删）
+    - stale:   两端都有但 rev 或状态不一致（服务端权威，需刷新）
+    """
+    by_uid = {}
+    for b in reported:
+        by_uid[b["uid"]] = b
+    srv = {}
+    for b in server_boxes:
+        srv[b["uid"]] = b
+
+    missing = sorted(set(srv) - set(by_uid))
+    extra = sorted(set(by_uid) - set(srv))
+    stale = [
+        uid for uid in sorted(set(srv) & set(by_uid))
+        if srv[uid]["rev"] != by_uid[uid]["rev"] or srv[uid]["status"] != by_uid[uid]["status"]
+    ]
+    return {"missing": missing, "extra": extra, "stale": stale}
+
+
 # ---------------------------------------------------------------- Web
 
 app = FastAPI(title="配件管理同步服务", version=VERSION)
@@ -574,6 +598,64 @@ def receive_shipment(request: Request, body: dict = Body(...)):
                 "UPDATE boxes SET status='SHIPPED' WHERE source_key=? AND status='IN_STOCK'", (key,)
             )
     return {"ok": True, "duplicate": False, "conflicts": [], "receivedAt": now}
+
+
+@app.post("/api/v1/reconcile")
+def reconcile(request: Request, body: dict = Body(...)):
+    """PDA 上报全部箱摘要（boxNorm/rev/status），服务端返回差异。
+
+    这是只读接口：不修改任何状态，仅报告分歧。PDA 据此决定补入缺箱、
+    刷新陈旧箱；extra 只提示，不自动删除（源表删行的墓碑机制另议）。
+    """
+    check_token(request)
+    ensure_fresh()
+
+    reported_raw = body.get("boxes", [])
+    if not isinstance(reported_raw, list):
+        raise HTTPException(400, "boxes 必须是数组")
+    reported = []
+    for item in reported_raw:
+        norm = norm_barcode(str(item.get("boxNorm", "")))
+        if not norm:
+            continue
+        reported.append({
+            "uid": norm,
+            "rev": int(item.get("rev") or 0),
+            "status": str(item.get("status") or "IN_STOCK"),
+        })
+
+    with db() as conn:
+        rev = int(meta_get(conn, "rev", "0") or 0)
+        rows = conn.execute(
+            "SELECT barcode_norm, rev, status FROM boxes WHERE barcode_norm <> ''"
+        ).fetchall()
+        server_boxes = [
+            {"uid": r["barcode_norm"], "rev": r["rev"], "status": r["status"]}
+            for r in rows
+        ]
+        diff = reconcile_diff(server_boxes, reported)
+
+        # 只为差异箱回查完整 payload，避免把 2 万箱全解析
+        need = diff["missing"] + diff["stale"]
+        changed: list[dict] = []
+        if need:
+            marks = ",".join("?" for _ in need)
+            for r in conn.execute(
+                f"SELECT payload, rev, status FROM boxes WHERE barcode_norm IN ({marks})", need
+            ).fetchall():
+                box = json.loads(r["payload"])
+                box["rev"] = r["rev"]
+                box["status"] = r["status"]
+                changed.append(box)
+
+    return {
+        "ok": True,
+        "serverRev": rev,
+        "serverCount": len(server_boxes),
+        "clientCount": len(reported),
+        "diff": diff,
+        "boxes": changed,
+    }
 
 
 @app.post("/api/v1/stockchecks")
