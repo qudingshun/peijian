@@ -121,30 +121,53 @@ class PackingRepository(private val db: AppDatabase) {
         data object NotFound : ScanLookup()
     }
 
+    /**
+     * 候选裁决：纯逻辑，便于 JVM 单测覆盖。
+     * 精确唯一 > 前缀拼接唯一 > 单号+箱号唯一；任一层出现多条都报歧义。
+     * 不再按「在库状态」猜测——那会把短码误命中变成静默错箱出库。
+     */
+    internal object ScanResolver {
+        sealed interface Outcome {
+            data object NotFound : Outcome
+            data class Ambiguous(val boxes: List<PackingBox>) : Outcome
+            data class Unique(val box: PackingBox) : Outcome
+        }
+
+        fun resolve(
+            exact: List<PackingBox>,
+            tail: List<PackingBox>,
+            fallback: List<PackingBox>
+        ): Outcome = when {
+            exact.size == 1 -> Outcome.Unique(exact.first())
+            exact.size > 1 -> Outcome.Ambiguous(exact)
+            tail.size == 1 -> Outcome.Unique(tail.first())
+            tail.size > 1 -> Outcome.Ambiguous(tail)
+            fallback.size == 1 -> Outcome.Unique(fallback.first())
+            fallback.size > 1 -> Outcome.Ambiguous(fallback)
+            else -> Outcome.NotFound
+        }
+    }
+
     suspend fun lookup(code: String): ScanLookup {
         val norm = BarcodeRules.normalize(code)
-        if (norm.length < 3) return ScanLookup.NotFound
+        if (norm.length < BarcodeRules.MIN_SCAN_NORM_LENGTH) return ScanLookup.NotFound
 
-        var candidates = packing.matchBarcode(norm)
-        if (candidates.isEmpty()) {
+        val exact = packing.findExactByNorm(norm)
+        val tail = if (exact.isEmpty()) packing.matchBarcodeTail(norm) else emptyList()
+        val fallback = if (exact.isEmpty() && tail.isEmpty()) {
             val (_, orderNo, boxNo) = BarcodeRules.split(code)
-            if (orderNo.isNotEmpty() && boxNo.isNotEmpty()) {
-                candidates = packing.matchOrderBox(orderNo, BarcodeRules.normalizeBoxNo(boxNo))
-            }
+            // 生产单号形如 P108580；过短或纯数字的片段不参与反查，避免误命中
+            if (orderNo.length >= 4 && orderNo.any { it.isLetter() } && boxNo.isNotBlank()) {
+                packing.matchOrderBox(orderNo, BarcodeRules.normalizeBoxNo(boxNo))
+            } else emptyList()
+        } else emptyList()
+
+        return when (val outcome = ScanResolver.resolve(exact, tail, fallback)) {
+            is ScanResolver.Outcome.NotFound -> ScanLookup.NotFound
+            is ScanResolver.Outcome.Ambiguous -> ScanLookup.Ambiguous(outcome.boxes)
+            is ScanResolver.Outcome.Unique ->
+                ScanLookup.Found(outcome.box, packing.itemsOfBox(outcome.box.id))
         }
-        if (candidates.isEmpty()) return ScanLookup.NotFound
-        if (candidates.size > 1) {
-            val exact = candidates.filter { it.barcodeNorm == norm }
-            if (exact.size == 1) candidates = exact
-            else {
-                // 同一箱号存在重复时，优先取在库的
-                val inStock = candidates.filter { it.status == BoxStatus.IN_STOCK }
-                if (inStock.size == 1) candidates = inStock
-                else return ScanLookup.Ambiguous(candidates)
-            }
-        }
-        val box = candidates.first()
-        return ScanLookup.Found(box, packing.itemsOfBox(box.id))
     }
 
     suspend fun boxDetail(boxId: Long): BoxWithItems? = packing.boxWithItems(boxId)

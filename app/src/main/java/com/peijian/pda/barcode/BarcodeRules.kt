@@ -14,6 +14,12 @@ object BarcodeRules {
 
     const val DEFAULT_SEPARATOR = "-"
 
+    /**
+     * 归一化后允许参与扫码匹配的最小长度。
+     * 短码（如 "1"、"801"）可能是任意箱码的后缀，放行会造成错箱出库。
+     */
+    const val MIN_SCAN_NORM_LENGTH = 6
+
     fun normalize(code: String): String =
         code.uppercase().filter { it.isLetterOrDigit() }
 
@@ -50,7 +56,7 @@ object BarcodeRules {
         }
     }
 
-    fun looksLikeBarcode(code: String): Boolean = normalize(code).length >= 4
+    fun looksLikeBarcode(code: String): Boolean = normalize(code).length >= MIN_SCAN_NORM_LENGTH
 
     /** 箱号显示：数值型去掉 .0 */
     fun normalizeBoxNo(raw: String): String {

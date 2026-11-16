@@ -202,16 +202,22 @@ interface PackingDao {
     suspend fun itemsOfBox(boxId: Long): List<PackingItem>
 
     /**
-     * 扫码匹配：支持带分隔符 / 不带分隔符 / 只扫「单号+箱号」。
-     * 返回最多 2 条，调用方按 0/1/多 处理。
+     * 精确匹配归一化箱码。理论上唯一，返回多条即为箱码冲突，交由业务层提示用户。
+     */
+    @Query("SELECT * FROM packing_box WHERE barcodeNorm=:norm LIMIT 2")
+    suspend fun findExactByNorm(norm: String): List<PackingBox>
+
+    /**
+     * 前缀拼接匹配：扫码串以库内箱码结尾（例如扫了 "XXW00305P108580-1"）。
+     *
+     * 刻意不做反向 LIKE（"barcodeNorm LIKE '%'||:norm"）：短码 "1" / "801" 会命中
+     * 大量库内箱码，配合 LIMIT 2 与「唯一在库即取」会静默错箱出库。
      */
     @Query(
-        "SELECT * FROM packing_box WHERE barcodeNorm=:norm " +
-            "OR (:norm <> '' AND :norm LIKE '%'||barcodeNorm) " +
-            "OR (:norm <> '' AND barcodeNorm LIKE '%'||:norm) " +
+        "SELECT * FROM packing_box WHERE :norm LIKE '%'||barcodeNorm " +
             "ORDER BY LENGTH(barcodeNorm) DESC LIMIT 2"
     )
-    suspend fun matchBarcode(norm: String): List<PackingBox>
+    suspend fun matchBarcodeTail(norm: String): List<PackingBox>
 
     @Query("SELECT * FROM packing_box WHERE orderNo=:orderNo AND boxNo=:boxNo LIMIT 2")
     suspend fun matchOrderBox(orderNo: String, boxNo: String): List<PackingBox>
