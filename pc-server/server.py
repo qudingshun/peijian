@@ -113,6 +113,7 @@ def init_db() -> None:
                 source_key TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
+                barcode_norm TEXT NOT NULL DEFAULT '',
                 rev INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'IN_STOCK',
                 updated_at INTEGER NOT NULL
@@ -130,6 +131,19 @@ def init_db() -> None:
             );
             """
         )
+        # 旧库平滑升级：补列 + 回填归一化条码，避免上传时全表解析 payload
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(boxes)")}
+        if "barcode_norm" not in cols:
+            conn.execute("ALTER TABLE boxes ADD COLUMN barcode_norm TEXT NOT NULL DEFAULT ''")
+            for row in conn.execute("SELECT source_key, payload FROM boxes").fetchall():
+                box = json.loads(row["payload"])
+                norm = norm_barcode(build_barcode(
+                    box.get("customerCode", ""), box.get("orderNo", ""), box.get("boxNo", "")
+                ))
+                conn.execute(
+                    "UPDATE boxes SET barcode_norm=? WHERE source_key=?", (norm, row["source_key"])
+                )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_boxes_barcode_norm ON boxes(barcode_norm)")
 
 
 def meta_get(conn: sqlite3.Connection, key: str, default: str = "") -> str:
@@ -387,11 +401,14 @@ def import_xlsx(force: bool = False) -> dict:
                 continue
             box["rev"] = new_rev
             box["barcode"] = build_barcode(box["customerCode"], box["orderNo"], box["boxNo"])
+            norm = norm_barcode(box["barcode"])
             conn.execute(
-                "INSERT INTO boxes(source_key,payload,content_hash,rev,status,updated_at) VALUES(?,?,?,?,?,?) "
-                "ON CONFLICT(source_key) DO UPDATE SET payload=excluded.payload, content_hash=excluded.content_hash,"
-                " rev=excluded.rev, updated_at=excluded.updated_at",
-                (key, json.dumps(box, ensure_ascii=False), h, new_rev, "IN_STOCK", now),
+                "INSERT INTO boxes(source_key,payload,content_hash,barcode_norm,rev,status,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(source_key) DO UPDATE SET payload=excluded.payload, "
+                "content_hash=excluded.content_hash, barcode_norm=excluded.barcode_norm, "
+                "rev=excluded.rev, updated_at=excluded.updated_at",
+                (key, json.dumps(box, ensure_ascii=False), h, norm, new_rev, "IN_STOCK", now),
             )
             if row:
                 updated += 1
