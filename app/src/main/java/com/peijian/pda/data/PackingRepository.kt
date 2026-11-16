@@ -37,6 +37,8 @@ class PackingRepository(private val db: AppDatabase) {
         var updated = 0
         var itemCount = 0
         val now = System.currentTimeMillis()
+        fun serverStatus(raw: String): String =
+            if (raw == BoxStatus.SHIPPED || raw == BoxStatus.VOID) raw else BoxStatus.IN_STOCK
 
         for (p in payloads) {
             val sourceKey = "${p.customerCode}|${p.orderNo}|${p.boxNo}"
@@ -62,6 +64,7 @@ class PackingRepository(private val db: AppDatabase) {
                         grossWeight = p.grossWeight,
                         packingUnit = p.packingUnit,
                         remark = p.remark,
+                        status = serverStatus(p.status),
                         rev = p.rev,
                         importedAt = now,
                         updatedAt = now,
@@ -73,8 +76,15 @@ class PackingRepository(private val db: AppDatabase) {
                 itemCount += p.items.size
             } else {
                 if (!force && p.rev < existing.rev) continue
+                // 服务端状态为权威；本机仍有未上传的出库事件时保留本地状态，避免离线出库被覆盖
+                val nextStatus = if (packing.hasLocalOutbound(existing.id) > 0) {
+                    existing.status
+                } else {
+                    serverStatus(p.status)
+                }
                 packing.updateBox(
                     existing.copy(
+                        status = nextStatus,
                         customerCode = p.customerCode,
                         customerName = p.customerName,
                         salesperson = p.salesperson,
@@ -235,10 +245,14 @@ class PackingRepository(private val db: AppDatabase) {
                             ScanStatus.DUPLICATE, code, box, lookup.items, "这一箱已经扫过"
                         )
                     }
-                    if (box.status == BoxStatus.SHIPPED) {
-                        return@withTransaction ScanResult(
-                            ScanStatus.ALREADY_SHIPPED, code, box, lookup.items,
+                    if (box.status != BoxStatus.IN_STOCK) {
+                        val reason = if (box.status == BoxStatus.SHIPPED) {
                             "这一箱已于 ${box.shippedAt ?: ""} 发出"
+                        } else {
+                            "这一箱状态为 ${box.status}，不能出库"
+                        }
+                        return@withTransaction ScanResult(
+                            ScanStatus.ALREADY_SHIPPED, code, box, lookup.items, reason
                         )
                     }
                     val sbId = shipments.insertShipmentBox(

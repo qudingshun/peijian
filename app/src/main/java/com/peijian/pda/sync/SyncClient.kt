@@ -103,7 +103,8 @@ class SyncClient(private val prefs: Prefs) {
                         remark = b.optString("remark"),
                         items = items,
                         rev = b.optLong("rev", 0),
-                        sourceRow = b.optInt("sourceRow", 0)
+                        sourceRow = b.optInt("sourceRow", 0),
+                        status = b.optString("status", "IN_STOCK")
                     )
                 )
             }
@@ -188,6 +189,12 @@ class SyncClient(private val prefs: Prefs) {
         http.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (resp.code == 401) throw SyncException("配对令牌不对，请重新配对")
+            if (resp.code == 409) {
+                val detail = runCatching { JSONObject(text).optJSONObject("detail") }.getOrNull()
+                val arr = detail?.optJSONArray("conflicts")
+                val names = if (arr == null) "" else (0 until arr.length()).joinToString("、") { arr.optString(it) }
+                throw SyncException("以下箱已被其他设备发出或不存在，本单未上传：$names")
+            }
             if (!resp.isSuccessful) throw SyncException("上传失败 HTTP ${resp.code}: ${text.take(200)}")
             val o = runCatching { JSONObject(text) }.getOrNull()
             if (o != null && !o.optBoolean("ok", true)) throw SyncException(o.optString("error", "上传失败"))

@@ -16,7 +16,9 @@ data class BoxPayload(
     val remark: String,
     val items: List<ItemPayload>,
     val rev: Long = 0,
-    val sourceRow: Int = 0
+    val sourceRow: Int = 0,
+    /** 服务端箱的当前状态（IN_STOCK / SHIPPED / VOID），旧版本接口缺省为在库 */
+    val status: String = "IN_STOCK"
 )
 
 data class ItemPayload(

@@ -504,12 +504,14 @@ def packing(request: Request, since: int = 0):
     with db() as conn:
         rev = int(meta_get(conn, "rev", "0") or 0)
         rows = conn.execute(
-            "SELECT payload, rev FROM boxes WHERE rev > ? ORDER BY rev, source_key", (since,)
+            "SELECT payload, rev, status FROM boxes WHERE rev > ? ORDER BY rev, source_key", (since,)
         ).fetchall()
         boxes = []
         for row in rows:
             box = json.loads(row["payload"])
             box["rev"] = row["rev"]
+            # 状态由服务端权威下发，PDA 换机拉全量时不会把已发出箱复活
+            box["status"] = row["status"]
             boxes.append(box)
         return {
             "ok": True,
@@ -528,20 +530,50 @@ def receive_shipment(request: Request, body: dict = Body(...)):
         raise HTTPException(400, "缺少 uid")
     now = int(time.time() * 1000)
     with LOCK, db() as conn:
-        exists = conn.execute("SELECT 1 FROM shipments WHERE uid=?", (uid,)).fetchone()
+        # 幂等：同一 uid 重传不重复入库、不重复标箱
+        if conn.execute("SELECT 1 FROM shipments WHERE uid=?", (uid,)).fetchone():
+            return {"ok": True, "duplicate": True, "conflicts": [], "receivedAt": now}
+
+        codes = [norm_barcode(b.get("barcode", "")) for b in body.get("boxes", [])]
+        codes = [c for c in dict.fromkeys(codes) if c]
+        found: dict[str, list] = {}
+        if codes:
+            marks = ",".join("?" for _ in codes)
+            for row in conn.execute(
+                f"SELECT source_key, barcode_norm, status FROM boxes WHERE barcode_norm IN ({marks})",
+                codes,
+            ).fetchall():
+                found.setdefault(row["barcode_norm"], []).append(row)
+
+        conflicts: list[str] = []
+        targets: list[str] = []
+        for code in codes:
+            hits = found.get(code, [])
+            if not hits or any(r["status"] != "IN_STOCK" for r in hits):
+                conflicts.append(code)
+            else:
+                targets.extend(r["source_key"] for r in hits)
+
+        # 整单原子性：任一箱已被发出或不存在，整单拒绝，留待 PDA 核实后撤回重扫
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "error": "部分箱已被其他设备发出或不存在，本单未入库",
+                    "conflicts": conflicts,
+                },
+            )
+
         conn.execute(
-            "INSERT OR REPLACE INTO shipments(uid,payload,received_at) VALUES(?,?,?)",
+            "INSERT INTO shipments(uid,payload,received_at) VALUES(?,?,?)",
             (uid, json.dumps(body, ensure_ascii=False), now),
         )
-        # 按条码把箱标成已发出
-        for box in body.get("boxes", []):
-            code = norm_barcode(box.get("barcode", ""))
-            for row in conn.execute("SELECT source_key, payload FROM boxes").fetchall():
-                payload = json.loads(row["payload"])
-                if norm_barcode(build_barcode(payload.get("customerCode", ""), payload.get("orderNo", ""), payload.get("boxNo", ""))) == code:
-                    conn.execute("UPDATE boxes SET status='SHIPPED' WHERE source_key=?", (row["source_key"],))
-                    break
-    return {"ok": True, "duplicate": bool(exists), "receivedAt": now}
+        for key in targets:
+            conn.execute(
+                "UPDATE boxes SET status='SHIPPED' WHERE source_key=? AND status='IN_STOCK'", (key,)
+            )
+    return {"ok": True, "duplicate": False, "conflicts": [], "receivedAt": now}
 
 
 @app.post("/api/v1/stockchecks")

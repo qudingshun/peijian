@@ -280,6 +280,14 @@ interface PackingDao {
     suspend fun summaryRows(): List<SummaryRow>
 
     /* 发货 / 盘点用 */
+
+    /** 该箱是否仍有未上传的出库事件（OPEN 或 FINISHED 但尚未同步的发货单） */
+    @Query(
+        "SELECT COUNT(*) FROM shipment_box sb JOIN shipment s ON s.id=sb.shipmentId " +
+            "WHERE sb.boxId=:boxId AND s.syncedAt IS NULL AND s.status IN ('OPEN','FINISHED')"
+    )
+    suspend fun hasLocalOutbound(boxId: Long): Int
+
     @Query("UPDATE packing_box SET status='SHIPPED', shipmentId=:shipmentId, shippedAt=:at, updatedAt=:at WHERE id=:boxId")
     suspend fun markShipped(boxId: Long, shipmentId: Long, at: Long)
 
