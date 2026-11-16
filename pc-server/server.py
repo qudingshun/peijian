@@ -378,6 +378,38 @@ def content_hash(box: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def box_source_key(box: dict) -> str:
+    return f"{box['customerCode']}|{box['orderNo']}|{box['boxNo']}"
+
+
+def plan_import(boxes: list[dict], existing_rows: list[dict], first_import: bool = False) -> tuple[list, list]:
+    """纯逻辑：本次解析结果 vs 库中现状，算出写入计划与墓碑计划。
+
+    - writes: [(source_key, box, old_row)]，内容变化或 VOID 复活箱需要 upsert
+    - tombstones: 库中存在、本次源表已删除、且仍 IN_STOCK 的 source_key
+
+    首次导入不做墓碑；SHIPPED 是出库历史，不因源表删行改写。
+    """
+    current_keys = {box_source_key(b) for b in boxes}
+    existing = {r["source_key"]: r for r in existing_rows}
+    writes = []
+    for box in boxes:
+        key = box_source_key(box)
+        h = content_hash(box)
+        old = existing.get(key)
+        # 内容没变、且不是墓碑状态 → 无需触碰（保持其 SHIPPED 等状态）
+        if old and old["content_hash"] == h and old["status"] != "VOID":
+            continue
+        writes.append((key, box, old))
+    tombstones = []
+    if not first_import:
+        tombstones = sorted(
+            r["source_key"] for r in existing_rows
+            if r["status"] == "IN_STOCK" and r["source_key"] not in current_keys
+        )
+    return writes, tombstones
+
+
 def import_xlsx(force: bool = False) -> dict:
     path = find_xlsx()
     if not path:
@@ -391,30 +423,49 @@ def import_xlsx(force: bool = False) -> dict:
         boxes, report = parse_xlsx(path)
         current_rev = int(meta_get(conn, "rev", "0") or 0)
         new_rev = current_rev + 1
-        inserted = updated = 0
+        inserted = updated = voided = 0
         now = int(time.time() * 1000)
-        for box in boxes:
-            key = f"{box['customerCode']}|{box['orderNo']}|{box['boxNo']}"
+
+        # 首次导入（库里没有任何箱 / 没有历史指纹）不做墓碑，避免误删
+        first_import = (conn.execute("SELECT COUNT(*) FROM boxes").fetchone()[0] == 0
+                        or not meta_get(conn, "fingerprint"))
+        existing_rows = [dict(r) for r in conn.execute(
+            "SELECT source_key, content_hash, status FROM boxes"
+        ).fetchall()]
+        writes, tombstones = plan_import(boxes, existing_rows, first_import)
+
+        for key, box, old in writes:
             h = content_hash(box)
-            row = conn.execute("SELECT content_hash, rev FROM boxes WHERE source_key=?", (key,)).fetchone()
-            if row and row["content_hash"] == h:
-                continue
             box["rev"] = new_rev
             box["barcode"] = build_barcode(box["customerCode"], box["orderNo"], box["boxNo"])
             norm = norm_barcode(box["barcode"])
+            # VOID 复活：源表重新出现该箱时恢复 IN_STOCK；否则保留原状态（SHIPPED 等）
+            next_status = "IN_STOCK" if (old and old["status"] == "VOID") else (
+                old["status"] if old else "IN_STOCK"
+            )
             conn.execute(
                 "INSERT INTO boxes(source_key,payload,content_hash,barcode_norm,rev,status,updated_at) "
                 "VALUES(?,?,?,?,?,?,?) "
                 "ON CONFLICT(source_key) DO UPDATE SET payload=excluded.payload, "
                 "content_hash=excluded.content_hash, barcode_norm=excluded.barcode_norm, "
-                "rev=excluded.rev, updated_at=excluded.updated_at",
-                (key, json.dumps(box, ensure_ascii=False), h, norm, new_rev, "IN_STOCK", now),
+                "rev=excluded.rev, status=excluded.status, updated_at=excluded.updated_at",
+                (key, json.dumps(box, ensure_ascii=False), h, norm, new_rev, next_status, now),
             )
-            if row:
+            if old:
                 updated += 1
             else:
                 inserted += 1
-        if inserted + updated > 0:
+
+        # 源表删行墓碑：打 VOID 并推进 rev，使 PDA 能通过 packing/reconcile 收到
+        for key in tombstones:
+            conn.execute(
+                "UPDATE boxes SET status='VOID', rev=?, updated_at=? "
+                "WHERE source_key=? AND status='IN_STOCK'",
+                (new_rev, now, key),
+            )
+            voided += 1
+
+        if inserted + updated + voided > 0:
             meta_set(conn, "rev", str(new_rev))
         meta_set(conn, "fingerprint", fingerprint)
         meta_set(conn, "source", str(path))
@@ -422,9 +473,10 @@ def import_xlsx(force: bool = False) -> dict:
         meta_set(conn, "last_report", json.dumps(report, ensure_ascii=False))
         result = {
             "ok": True,
-            "rev": new_rev if inserted + updated > 0 else current_rev,
+            "rev": new_rev if inserted + updated + voided > 0 else current_rev,
             "inserted": inserted,
             "updated": updated,
+            "voided": voided,
             **report,
             "source": str(path),
         }
