@@ -18,6 +18,12 @@ import java.util.zip.ZipFile
  */
 object XlsxReader {
 
+    /**
+     * 解析器工厂：生产环境用 Android 自带的 Xml.newPullParser()；
+     * 单元测试可注入 kxml2，从而在电脑上直接验证真实 Excel 的解析结果。
+     */
+    internal var parserFactory: (() -> XmlPullParser)? = null
+
     data class SheetData(
         val rows: List<Map<Int, String>>,
         /** 1-based 最大行号 */
@@ -110,7 +116,7 @@ object XlsxReader {
     }
 
     private fun newParser(input: InputStream): XmlPullParser =
-        Xml.newPullParser().apply {
+        (parserFactory?.invoke() ?: Xml.newPullParser()).apply {
             setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
             setInput(input, null)
         }
