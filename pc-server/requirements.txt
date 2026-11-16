@@ -1,0 +1,6 @@
+# 电脑端同步服务依赖（Python 3.10+）
+fastapi>=0.110
+uvicorn>=0.29
+openpyxl>=3.1
+python-barcode>=0.15
+qrcode[pil]>=7.4

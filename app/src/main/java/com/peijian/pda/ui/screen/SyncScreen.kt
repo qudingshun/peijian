@@ -1,0 +1,152 @@
+package com.peijian.pda.ui.screen
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.peijian.pda.logic.DateText
+import com.peijian.pda.ui.AppViewModel
+import com.peijian.pda.ui.ScanField
+import com.peijian.pda.ui.SectionCard
+
+@Composable
+fun SyncScreen(vm: AppViewModel) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val allBoxes by vm.allBoxCount.collectAsStateWithLifecycle(initialValue = 0)
+    val stockBoxes by vm.stockBoxCount.collectAsStateWithLifecycle(initialValue = 0)
+    val unsynced by vm.unsyncedShipments.collectAsStateWithLifecycle(initialValue = 0)
+    val unsyncedChecks by vm.unsyncedChecks.collectAsStateWithLifecycle(initialValue = 0)
+
+    var url by remember(settings.serverUrl) { mutableStateOf(settings.serverUrl) }
+    var token by remember(settings.token) { mutableStateOf(settings.token) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importXlsx(uri)
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        SectionCard("电脑端同步服务") {
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("电脑地址", fontSize = 12.sp) },
+                placeholder = { Text("192.168.1.5:8000") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("配对令牌", fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        vm.saveSettings(url, token, settings.operator, settings.deviceName, settings.separator, settings.duplicatePolicy)
+                        vm.testConnection()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("保存并测试") }
+                OutlinedButton(
+                    onClick = { vm.pull() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("拉取新增") }
+            }
+        }
+
+        SectionCard("扫码配对") {
+            Text(
+                "电脑端打开同步服务网页 → 显示配对二维码 → 用扫码枪扫屏幕",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            ScanField(label = "配对二维码内容 / IP:端口#令牌", onSubmit = { vm.applyPairing(it) })
+            Text(
+                "配对成功后自动填入上面的地址和令牌，再点「保存并测试」。",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        SectionCard("导入 Excel（无网络时）") {
+            Text(
+                "把电脑上的「配件记录.xlsx」拷到 PDA（或用微信/共享文件夹打开），直接选文件导入。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { picker.launch(arrayOf("*/*")) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) { Text("选择 配件记录.xlsx") }
+        }
+
+        SectionCard("上传本机记录") {
+            Text(
+                "发货单 ${unsynced} 张、盘点 ${unsyncedChecks} 批待上传。",
+                fontSize = 12.sp
+            )
+            Button(
+                onClick = { vm.push() },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) { Text("立即上传到电脑") }
+        }
+
+        SectionCard("数据状态") {
+            InfoRow("已导入箱数", "$allBoxes")
+            InfoRow("在库箱数", "$stockBoxes")
+            InfoRow("数据版本（rev）", "${settings.lastRev}")
+            InfoRow("上次同步", if (settings.lastSyncAt > 0) DateText.dateTime(settings.lastSyncAt) else "—")
+            InfoRow("本机名称", settings.deviceName)
+        }
+
+        SectionCard("电脑端怎么开服务") {
+            Text("1. 把 pc-server 文件夹复制到电脑（如 E:\\peijian\\pc-server）", fontSize = 11.sp)
+            Text("2. 双击「启动同步服务.bat」", fontSize = 11.sp)
+            Text("3. 首次运行会自动在 data 目录生成令牌并显示配对二维码", fontSize = 11.sp)
+            Text("4. PDA 与本机连同一个 WiFi / 路由器（关闭 AP 隔离）", fontSize = 11.sp)
+            Text(
+                "详见仓库 docs/04-部署与使用.md",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    com.peijian.pda.ui.InfoLine(label, value)
+}
