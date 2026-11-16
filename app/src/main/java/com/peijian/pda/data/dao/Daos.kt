@@ -65,6 +65,13 @@ data class BoxListRow(
     val totalQty: Long
 )
 
+/** 对账上报用的轻量箱摘要：只取归一化条码、版本、状态 */
+data class BoxDigest(
+    val barcodeNorm: String,
+    val rev: Long,
+    val status: String
+)
+
 data class ShipmentListRow(
     val id: Long,
     val docNo: String,
@@ -294,8 +301,16 @@ interface PackingDao {
     @Query("UPDATE packing_box SET status='IN_STOCK', shipmentId=NULL, shippedAt=NULL, updatedAt=:at WHERE id=:boxId")
     suspend fun markInStock(boxId: Long, at: Long)
 
+    /** 对账发现服务端已删行时把本地箱置为作废（软删除，保留轨迹） */
+    @Query("UPDATE packing_box SET status='VOID', updatedAt=:at WHERE barcodeNorm=:norm")
+    suspend fun markVoidByNorm(norm: String, at: Long)
+
     @Query("SELECT COUNT(*) FROM packing_box WHERE status='IN_STOCK'")
     suspend fun stockBoxCount(): Int
+
+    /** 对账用：全量箱摘要，只投影三列，避免把 2 万箱完整对象读进内存 */
+    @Query("SELECT barcodeNorm, rev, status FROM packing_box")
+    suspend fun allDigests(): List<BoxDigest>
 
     @Query("SELECT COUNT(*) FROM packing_box WHERE status='IN_STOCK' AND importedAt>=:since")
     suspend fun newStockSince(since: Long): Int

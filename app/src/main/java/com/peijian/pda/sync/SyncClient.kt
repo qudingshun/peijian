@@ -112,6 +112,104 @@ class SyncClient(private val prefs: Prefs) {
         }
     }
 
+    data class DigestInput(val boxNorm: String, val rev: Long, val status: String)
+
+    data class ReconcileResult(
+        val serverRev: Long,
+        val serverCount: Int,
+        val clientCount: Int,
+        val missing: List<String>,
+        val extra: List<String>,
+        val stale: List<String>,
+        /** 服务端权威的完整箱数据（missing + stale），可直接交给 applyBoxes 补入/刷新 */
+        val changedBoxes: List<BoxPayload>
+    )
+
+    /** 上报本机全部箱摘要，取回两端差异；只读接口，不改变服务端状态。 */
+    suspend fun reconcile(digests: List<DigestInput>): ReconcileResult = withContext(Dispatchers.IO) {
+        val root = JSONObject()
+        val arr = JSONArray()
+        for (d in digests) {
+            arr.put(
+                JSONObject().apply {
+                    put("boxNorm", d.boxNorm)
+                    put("rev", d.rev)
+                    put("status", d.status)
+                }
+            )
+        }
+        root.put("boxes", arr)
+
+        val req = Request.Builder()
+            .url("${base()}/api/v1/reconcile")
+            .header("X-Sync-Token", prefs.token)
+            .post(root.toString().toRequestBody(jsonType))
+            .build()
+        http.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (resp.code == 401) throw SyncException("配对令牌不对，请在电脑端重新生成配对码")
+            if (!resp.isSuccessful) throw SyncException("对账失败 HTTP ${resp.code}: ${text.take(200)}")
+            val o = JSONObject(text)
+            if (!o.optBoolean("ok", false)) throw SyncException(o.optString("error", "对账失败"))
+
+            val diff = o.optJSONObject("diff") ?: JSONObject()
+            fun stringList(key: String): List<String> {
+                val a = diff.optJSONArray(key) ?: return emptyList()
+                return (0 until a.length()).map { a.optString(it) }
+            }
+
+            val boxesArr = o.optJSONArray("boxes") ?: JSONArray()
+            val changed = ArrayList<BoxPayload>(boxesArr.length())
+            for (i in 0 until boxesArr.length()) {
+                val b = boxesArr.getJSONObject(i)
+                val items = ArrayList<ItemPayload>()
+                val ia = b.optJSONArray("items") ?: JSONArray()
+                for (j in 0 until ia.length()) {
+                    val it = ia.getJSONObject(j)
+                    items.add(
+                        ItemPayload(
+                            partCode = it.optString("partCode"),
+                            englishName = it.optString("englishName"),
+                            partName = it.optString("partName"),
+                            quantity = it.optInt("quantity"),
+                            machineModel = it.optString("machineModel"),
+                            remark = it.optString("remark")
+                        )
+                    )
+                }
+                changed.add(
+                    BoxPayload(
+                        customerCode = b.optString("customerCode"),
+                        customerName = b.optString("customerName"),
+                        salesperson = b.optString("salesperson"),
+                        country = b.optString("country"),
+                        orderNo = b.optString("orderNo"),
+                        boxNo = b.optString("boxNo"),
+                        packDate = b.optLong("packDate", 0).takeIf { it > 0 },
+                        dimension = b.optString("dimension"),
+                        volume = b.optDouble("volume", Double.NaN).takeIf { it.isFinite() },
+                        grossWeight = b.optDouble("grossWeight", Double.NaN).takeIf { it.isFinite() },
+                        packingUnit = b.optString("packingUnit"),
+                        remark = b.optString("remark"),
+                        items = items,
+                        rev = b.optLong("rev", 0),
+                        sourceRow = b.optInt("sourceRow", 0),
+                        status = b.optString("status", "IN_STOCK")
+                    )
+                )
+            }
+            ReconcileResult(
+                serverRev = o.optLong("serverRev", 0),
+                serverCount = o.optInt("serverCount", 0),
+                clientCount = o.optInt("clientCount", 0),
+                missing = stringList("missing"),
+                extra = stringList("extra"),
+                stale = stringList("stale"),
+                changedBoxes = changed
+            )
+        }
+    }
+
     suspend fun pushShipment(
         shipment: Shipment,
         boxes: List<ShipmentBox>,
