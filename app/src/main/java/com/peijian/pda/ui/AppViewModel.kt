@@ -405,9 +405,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun push() {
         runBusy("正在上传未同步记录…") {
             val r = syncRepo.pushAll()
+            val done = "发货单 ${r.shipments} 张，盘点 ${r.stockChecks} 批"
+            val head = when {
+                r.shipments + r.stockChecks > 0 -> "已上传：$done"
+                r.conflicts.isEmpty() -> "没有待上传的记录"
+                else -> "没有记录上传成功"
+            }
             emit(
-                if (r.shipments + r.stockChecks == 0) "没有待上传的记录"
-                else "已上传：发货单 ${r.shipments} 张，盘点 ${r.stockChecks} 批"
+                if (r.conflicts.isEmpty()) head
+                else "$head；${r.conflicts.size} 条冲突未上传（仍保留在本机）：\n" +
+                    r.conflicts.joinToString("\n")
             )
         }
     }

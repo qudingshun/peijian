@@ -35,7 +35,12 @@ class SyncRepository(
         private const val MAX_PAGES = 500
     }
 
-    data class PushReport(val shipments: Int, val stockChecks: Int)
+    data class PushReport(
+        val shipments: Int,
+        val stockChecks: Int,
+        /** 被服务端 409 拒绝而跳过的条目（已留在本机待处理），不阻塞其余记录 */
+        val conflicts: List<String> = emptyList()
+    )
 
     data class ReconcileReport(
         val serverRev: Long,
@@ -159,14 +164,21 @@ class SyncRepository(
     suspend fun pushAll(): PushReport {
         var shipmentCount = 0
         var checkCount = 0
+        val conflicts = mutableListOf<String>()
 
         val shipments = db.shipmentDao().unsynced()
         for (s in shipments) {
             val boxes = db.shipmentDao().boxesOf(s.id)
-            client.pushShipment(s, boxes) { sbId ->
-                db.shipmentDao().itemsOfShipmentBox(sbId).map {
-                    Triple(it.partCode, it.partName, it.quantity)
+            try {
+                client.pushShipment(s, boxes) { sbId ->
+                    db.shipmentDao().itemsOfShipmentBox(sbId).map {
+                        Triple(it.partCode, it.partName, it.quantity)
+                    }
                 }
+            } catch (e: ConflictException) {
+                // 单张发货单被拒（如箱已被其他设备发出）：跳过继续，别堵住后面的单据
+                conflicts += "发货单 ${s.docNo}：${e.message}"
+                continue
             }
             db.shipmentDao().markSynced(s.id, System.currentTimeMillis())
             shipmentCount++
@@ -175,16 +187,21 @@ class SyncRepository(
         val checks = db.stockCheckDao().unsynced()
         for (c in checks) {
             val scans = db.stockCheckDao().scanEntities(c.id)
-            client.pushStockCheck(c, scans) { scanId ->
-                db.stockCheckDao().itemsOfScan(scanId).map {
-                    Triple(it.partCode, it.partName, it.quantity)
+            try {
+                client.pushStockCheck(c, scans) { scanId ->
+                    db.stockCheckDao().itemsOfScan(scanId).map {
+                        Triple(it.partCode, it.partName, it.quantity)
+                    }
                 }
+            } catch (e: ConflictException) {
+                conflicts += "盘点 ${c.batchNo}：${e.message}"
+                continue
             }
             db.stockCheckDao().markSynced(c.id, System.currentTimeMillis())
             checkCount++
         }
 
         if (shipmentCount + checkCount > 0) prefs.lastSyncAt = System.currentTimeMillis()
-        return PushReport(shipmentCount, checkCount)
+        return PushReport(shipmentCount, checkCount, conflicts)
     }
 }

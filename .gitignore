@@ -41,6 +41,8 @@ usage.txt
 # 本机部署 / 备份目录（不入库）
 /backup/
 /local/
+# 协作工具的过程记忆与补丁备份（不入库）
+/.workbuddy/
 
 # ===== Python（配套脚本/服务端）=====
 __pycache__/

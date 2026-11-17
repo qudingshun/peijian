@@ -16,7 +16,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-class SyncException(message: String) : Exception(message)
+open class SyncException(message: String) : Exception(message)
+
+/** 服务端 409：本单里有箱已被其他设备发出、不存在或同码多箱，需要用户核实后重扫。 */
+class ConflictException(message: String) : SyncException(message)
 
 /**
  * 与电脑端「配件同步服务」通信。
@@ -305,7 +308,7 @@ class SyncClient(private val prefs: Prefs) {
                 val detail = runCatching { JSONObject(text).optJSONObject("detail") }.getOrNull()
                 val arr = detail?.optJSONArray("conflicts")
                 val names = if (arr == null) "" else (0 until arr.length()).joinToString("、") { arr.optString(it) }
-                throw SyncException("以下箱已被其他设备发出或不存在，本单未上传：$names")
+                throw ConflictException("以下箱已被其他设备发出或不存在，本单未上传：$names")
             }
             if (!resp.isSuccessful) throw SyncException("上传失败 HTTP ${resp.code}: ${text.take(200)}")
             val o = runCatching { JSONObject(text) }.getOrNull()

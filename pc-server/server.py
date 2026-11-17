@@ -680,6 +680,25 @@ def packing(request: Request, since: int = 0, limit: int = 0, after_key: str = "
 
 
 @app.post("/api/v1/shipments")
+def plan_shipment_targets(codes: list[str], found: dict[str, list]) -> tuple[list[str], list[str]]:
+    """纯逻辑：把本单箱码映射为可标发出的 source_key。
+
+    - 码不存在、或对应箱已非「在库」→ 冲突；
+    - 同一 barcode_norm 命中多箱（源表历史重复箱号）→ 冲突，绝不批量标发出，
+      否则一次上传会把用户只扫过的那一箱之外的同码箱一起标成已发出。
+    返回 (targets, conflicts)，两者互斥且覆盖全部 codes。
+    """
+    targets: list[str] = []
+    conflicts: list[str] = []
+    for code in codes:
+        hits = found.get(code) or []
+        if len(hits) != 1 or hits[0]["status"] != "IN_STOCK":
+            conflicts.append(code)
+        else:
+            targets.append(hits[0]["source_key"])
+    return targets, conflicts
+
+
 def receive_shipment(request: Request, body: dict = Body(...)):
     check_token(request)
     uid = str(body.get("uid") or "").strip()
@@ -702,14 +721,7 @@ def receive_shipment(request: Request, body: dict = Body(...)):
             ).fetchall():
                 found.setdefault(row["barcode_norm"], []).append(row)
 
-        conflicts: list[str] = []
-        targets: list[str] = []
-        for code in codes:
-            hits = found.get(code, [])
-            if not hits or any(r["status"] != "IN_STOCK" for r in hits):
-                conflicts.append(code)
-            else:
-                targets.extend(r["source_key"] for r in hits)
+        targets, conflicts = plan_shipment_targets(codes, found)
 
         # 整单原子性：任一箱已被发出或不存在，整单拒绝，留待 PDA 核实后撤回重扫
         if conflicts:
@@ -970,6 +982,16 @@ def label_img_src(code: str, kind: str, token: str) -> str:
     return esc(f"/api/v1/label.png?token={qtoken}&code={qcode}&kind={kind}")
 
 
+def box_seq(value: Any) -> int:
+    """箱号首段转整数：``"12-3"`` → 12；空值或非数字 → 0。
+
+    标签页按箱号区间筛选，源表箱号列可能是文本（``"A1"``/``"12-3"``），
+    直接 ``int(...)`` 会让整个 /labels 500，这里统一容错。
+    """
+    head = str(value or "").strip().split("-", 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
 def barcode_svg(code: str) -> str:
     import barcode
     from barcode.writer import SVGWriter
@@ -1006,7 +1028,7 @@ def labels_page(request: Request, order: str = "", from_no: int = 1, to_no: int 
         boxes = [json.loads(r["payload"]) for r in conn.execute("SELECT payload FROM boxes ORDER BY source_key")]
     orders = sorted({b.get("orderNo", "") for b in boxes if b.get("orderNo")})
     selected = [b for b in boxes if not order or b.get("orderNo") == order]
-    selected = [b for b in selected if from_no <= int(str(b.get("boxNo", "0")).split("-")[0] or 0) <= to_no][:300]
+    selected = [b for b in selected if from_no <= box_seq(b.get("boxNo")) <= to_no][:300]
 
     cards = []
     for b in selected:
