@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import os
@@ -27,9 +28,11 @@ import threading
 import time
 import zipfile
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -98,10 +101,22 @@ def find_xlsx() -> Path | None:
     return None
 
 
-def db() -> sqlite3.Connection:
+@contextmanager
+def db() -> Iterator[sqlite3.Connection]:
+    """打开数据库连接并在退出时真正关闭。
+
+    sqlite3 连接作为上下文管理器只负责提交/回滚事务，并不会关闭连接；
+    在 FastAPI 线程池下每次请求新建连接却不关闭，会一直累积句柄直到 GC。
+    这里用 contextlib.contextmanager 包一层，保留原有 `with db() as conn:`
+    调用点的事务语义（正常提交、异常回滚），同时保证连接一定被 close。
+    """
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
@@ -926,6 +941,21 @@ def export_shipments(request: Request):
 
 # ---------------------------------------------------------------- 标签
 
+def esc(value: Any) -> str:
+    """HTML 转义：任何来自 Excel 或查询参数的值写进页面前都要经过这里。
+
+    防止箱码/配件名/单号里带 ``<script>`` 之类的内容形成存储型 XSS。
+    """
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def label_img_src(code: str, kind: str, token: str) -> str:
+    """构造二维码图片 URL：code/token 先做 URL 编码，整个属性再做 HTML 转义。"""
+    qcode = quote(code, safe="")
+    qtoken = quote(token, safe="")
+    return esc(f"/api/v1/label.png?token={qtoken}&code={qcode}&kind={kind}")
+
+
 def barcode_svg(code: str) -> str:
     import barcode
     from barcode.writer import SVGWriter
@@ -968,19 +998,24 @@ def labels_page(request: Request, order: str = "", from_no: int = 1, to_no: int 
     for b in selected:
         code = b.get("barcode") or build_barcode(b.get("customerCode", ""), b.get("orderNo", ""), b.get("boxNo", ""))
         img = (
-            f'<img src="/api/v1/label.png?token={TOKEN}&code={code}&kind=qr" style="width:120px;height:120px"/>'
+            f'<img src="{label_img_src(code, "qr", TOKEN)}" style="width:120px;height:120px"/>'
             if kind == "qr"
             else barcode_svg(code)
         )
-        parts = "；".join(f'{i.get("partCode")} {i.get("partName")} ×{i.get("quantity")}' for i in b.get("items", []))
+        parts = "；".join(
+            f'{esc(i.get("partCode"))} {esc(i.get("partName"))} ×{esc(i.get("quantity"))}'
+            for i in b.get("items", [])
+        )
         cards.append(
-            f'<div class="label">{img}<div class="code">{code}</div>'
-            f'<div class="meta">客户 {b.get("customerCode","")} · 单号 {b.get("orderNo","")} · 箱 {b.get("boxNo","")}</div>'
+            f'<div class="label">{img}<div class="code">{esc(code)}</div>'
+            f'<div class="meta">客户 {esc(b.get("customerCode",""))} · 单号 {esc(b.get("orderNo",""))} · 箱 {esc(b.get("boxNo",""))}</div>'
             f'<div class="parts">{parts}</div></div>'
         )
 
-    options = "".join(f'<option value="{o}" {"selected" if o == order else ""}>{o}</option>' for o in orders)
-    html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+    options = "".join(
+        f'<option value="{esc(o)}" {"selected" if o == order else ""}>{esc(o)}</option>' for o in orders
+    )
+    page = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>箱码标签打印</title>
 <style>
 body{{font-family:system-ui,"Microsoft YaHei";margin:16px;background:#f6f7fb}}
@@ -1006,7 +1041,7 @@ select,input,button{{padding:6px 8px;font-size:13px}}
 <p style="font-size:12px;color:#666">共 {len(selected)} 个标签；建议用标签打印机（40×30mm）或 A4 不干胶。条码内容 = 客户编码-生产单号-箱号。</p>
 {''.join(cards)}
 </body></html>"""
-    return HTMLResponse(html)
+    return HTMLResponse(page)
 
 
 # ---------------------------------------------------------------- 首页
@@ -1026,8 +1061,10 @@ def index(request: Request):
 
     ip = lan_ip()
     pair_text = f"PEIJIANSYNC1|ip={ip}|port=8000|token={TOKEN}|ver=1"
-    pair_img = f"/pair.png?text={pair_text}"
+    pair_img = esc(f"/pair.png?text={quote(pair_text, safe='')}")
     last_import_text = datetime.fromtimestamp(last_import / 1000).strftime("%Y-%m-%d %H:%M:%S") if last_import else "—"
+    source_html = esc(source or "未找到")
+    report_html = esc(json.dumps(report, ensure_ascii=False))
     return HTMLResponse(f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>配件管理 · 同步服务</title>
 <style>
@@ -1050,8 +1087,8 @@ a.sec{{background:#fff;color:#1565C0;border:1px solid #1565C0}}
     <div><div class="k">{checks}</div><div class="l">收到的盘点批次</div></div>
     <div><div class="k">rev {rev}</div><div class="l">数据版本</div></div>
   </div>
-  <p style="font-size:12px;color:#666">源表：<code>{source or '未找到'}</code><br>
-  上次导入：{last_import_text} · 导入结果：{json.dumps(report, ensure_ascii=False)}</p>
+  <p style="font-size:12px;color:#666">源表：<code>{source_html}</code><br>
+  上次导入：{last_import_text} · 导入结果：{report_html}</p>
 </div>
 <div class="card">
   <h2>PDA 配对</h2>
