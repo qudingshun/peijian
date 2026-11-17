@@ -396,7 +396,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _settings.value = readSettings()
             emit(
                 if (r.received == 0) "没有新数据（版本 ${r.revAfter}）"
-                else "收到 ${r.received} 箱：新增 ${r.inserted}，更新 ${r.updated}，配件明细 ${r.items} 行"
+                else "收到 ${r.received} 箱：新增 ${r.inserted}，更新 ${r.updated}，配件明细 ${r.items} 行" +
+                    if (r.pages > 1) "（分 ${r.pages} 页）" else ""
             )
         }
     }

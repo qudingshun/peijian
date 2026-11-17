@@ -22,8 +22,18 @@ class SyncRepository(
         val inserted: Int,
         val updated: Int,
         val items: Int,
-        val serverTime: String
+        val serverTime: String,
+        val pages: Int = 1
     )
+
+    companion object {
+        /** 每页拉取箱数；配合服务端 PACKING_PAGE_MAX=2000 */
+        const val PULL_PAGE_SIZE = 1000
+        /** 对账差异箱的分块落库大小 */
+        private const val APPLY_CHUNK = 500
+        /** 分页守卫，防止异常端返回 hasMore 导致死循环（2 万箱正常约 20 页） */
+        private const val MAX_PAGES = 500
+    }
 
     data class PushReport(val shipments: Int, val stockChecks: Int)
 
@@ -50,9 +60,17 @@ class SyncRepository(
         }
         val result = client.reconcile(digests)
 
-        val applied = if (result.changedBoxes.isNotEmpty()) {
-            repo.applyBoxes(result.changedBoxes, prefs.separator, force = true)
-        } else PackingRepository.ApplyResult(0, 0, 0)
+        // 分块落库，避免换机首次对账（可能全量 2 万箱）一次性构建超大事务
+        var inserted = 0
+        var updated = 0
+        var appliedItems = 0
+        result.changedBoxes.chunked(APPLY_CHUNK).forEach { chunk ->
+            val a = repo.applyBoxes(chunk, prefs.separator, force = true)
+            inserted += a.inserted
+            updated += a.updated
+            appliedItems += a.items
+        }
+        val applied = PackingRepository.ApplyResult(inserted, updated, appliedItems)
 
         var voided = 0
         var skipped = 0
@@ -89,20 +107,52 @@ class SyncRepository(
 
     suspend fun pull(): PullReport {
         val since = prefs.lastRev
-        val result = client.pull(since)
-        val boxes: List<BoxPayload> = result.boxes
-        val applied = repo.applyBoxes(boxes, prefs.separator, force = false)
-        // 只有成功落库后才推进版本号
-        if (result.rev > since) prefs.lastRev = result.rev
+        var cursorSince = since
+        var cursorAfter = ""
+        var pages = 0
+        var received = 0
+        var inserted = 0
+        var updated = 0
+        var itemLines = 0
+        var serverTime = ""
+        var serverRev = since
+
+        // 逐页拉取 + 逐页落库：峰值内存从「全量 2 万箱」降为「单页 1000 箱」。
+        // 版本号只在全部页面成功后推进；中途失败时下次从原 since 重拉，applyBoxes 幂等。
+        while (true) {
+            val page = client.pull(cursorSince, limit = PULL_PAGE_SIZE, afterKey = cursorAfter)
+            pages++
+            serverRev = page.rev
+            serverTime = page.serverTime
+
+            if (page.boxes.isNotEmpty()) {
+                val applied = repo.applyBoxes(page.boxes, prefs.separator, force = false)
+                received += page.boxes.size
+                inserted += applied.inserted
+                updated += applied.updated
+                itemLines += applied.items
+            }
+
+            if (!page.hasMore) break
+            // 防御：服务端声称还有下一页但本页空，或页数超守卫 → 中止，避免死循环
+            if (page.boxes.isEmpty() || pages >= MAX_PAGES) {
+                throw SyncException("分页拉取异常终止（pages=$pages），请重试")
+            }
+            cursorSince = page.nextSince
+            cursorAfter = page.nextAfterKey
+        }
+
+        if (serverRev > since) prefs.lastRev = serverRev
         prefs.lastSyncAt = System.currentTimeMillis()
         return PullReport(
             revBefore = since,
             revAfter = prefs.lastRev,
-            received = boxes.size,
-            inserted = applied.inserted,
-            updated = applied.updated,
-            items = applied.items,
-            serverTime = result.serverTime
+            received = received,
+            inserted = inserted,
+            updated = updated,
+            items = itemLines,
+            serverTime = serverTime,
+            pages = pages
         )
     }
 

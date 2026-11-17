@@ -35,7 +35,11 @@ class SyncClient(private val prefs: Prefs) {
     data class PullResult(
         val rev: Long,
         val boxes: List<BoxPayload>,
-        val serverTime: String
+        val serverTime: String,
+        /** 分页游标：hasMore=true 时用 nextSince/nextAfterKey 请求下一页 */
+        val hasMore: Boolean = false,
+        val nextSince: Long = rev,
+        val nextAfterKey: String = ""
     )
 
     private fun base(): String {
@@ -55,9 +59,11 @@ class SyncClient(private val prefs: Prefs) {
         }
     }
 
-    suspend fun pull(since: Long): PullResult = withContext(Dispatchers.IO) {
+    suspend fun pull(since: Long, limit: Int = 0, afterKey: String = ""): PullResult = withContext(Dispatchers.IO) {
+        val after = if (afterKey.isEmpty()) "" else
+            "&after_key=${java.net.URLEncoder.encode(afterKey, "UTF-8")}"
         val req = Request.Builder()
-            .url("${base()}/api/v1/packing?since=$since")
+            .url("${base()}/api/v1/packing?since=$since&limit=$limit$after")
             .header("X-Sync-Token", prefs.token)
             .get()
             .build()
@@ -108,7 +114,14 @@ class SyncClient(private val prefs: Prefs) {
                     )
                 )
             }
-            PullResult(o.optLong("rev", since), boxes, o.optString("serverTime"))
+            PullResult(
+                rev = o.optLong("rev", since),
+                boxes = boxes,
+                serverTime = o.optString("serverTime"),
+                hasMore = o.optBoolean("has_more", false),
+                nextSince = o.optLong("next_since", since),
+                nextAfterKey = o.optString("next_after_key", "")
+            )
         }
     }
 
