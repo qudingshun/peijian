@@ -29,7 +29,7 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
@@ -204,7 +204,18 @@ def build_barcode(customer: str, order_no: str, box_no: str) -> str:
     return "-".join([p for p in (customer.strip(), order_no.strip(), box_no.strip()) if p])
 
 
+# 打包日期是「日历日」而非时刻，统一锚定固定 UTC+8，避免服务端部署时区 /
+# 客户端设备时区把它漂移到相邻一天。设备事件时间（scannedAt/shippedAt 等）
+# 仍按各自本地时区显示，不走这里。
+PACK_DATE_TZ = timezone(timedelta(hours=8))
+
+
 def excel_date_to_millis(raw: str) -> int | None:
+    """Excel 1900 日期系统序列号 → UTC+8 当天 00:00 的 epoch 毫秒。
+
+    两端唯一权威规则：日期基准 1899-12-30（兼容 Excel 的 1900-02-29），
+    取整数天，锚定固定 UTC+8。PDA 侧 `XlsxReader.excelDateToMillis` 必须一致。
+    """
     if not raw:
         return None
     try:
@@ -213,11 +224,14 @@ def excel_date_to_millis(raw: str) -> int | None:
         return None
     if not (1 <= serial <= 80000):
         return None
-    # Excel 1900 日期系统（含 1900-02-29 的兼容处理）
-    from datetime import date, timedelta
     d = date(1899, 12, 30) + timedelta(days=int(serial))
-    dt = datetime(d.year, d.month, d.day)
+    dt = datetime(d.year, d.month, d.day, tzinfo=PACK_DATE_TZ)
     return int(dt.timestamp() * 1000)
+
+
+def millis_to_pack_date(ms: int) -> str:
+    """把 packDate 毫秒按同一固定 UTC+8 渲染成 YYYY-MM-DD（导出用）。"""
+    return datetime.fromtimestamp(ms / 1000, PACK_DATE_TZ).strftime("%Y-%m-%d")
 
 
 def parse_xlsx(path: Path) -> tuple[list[dict], dict]:
@@ -865,7 +879,7 @@ def export_inventory(request: Request, scope: str = "stock"):
         for r in rows:
             b, i = r["box"], r["item"]
             ws.append([
-                datetime.fromtimestamp((b.get("packDate") or 0) / 1000).strftime("%Y-%m-%d") if b.get("packDate") else "",
+                millis_to_pack_date(b["packDate"]) if b.get("packDate") else "",
                 b.get("customerCode", ""), b.get("customerName", ""), b.get("salesperson", ""), b.get("country", ""),
                 b.get("orderNo", ""), b.get("boxNo", ""), b.get("dimension", ""),
                 b.get("volume") if b.get("volume") is not None else "",
