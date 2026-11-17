@@ -38,8 +38,22 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun miscDao(): MiscDao
 
     companion object {
+        /** 供备份 manifest 记录，恢复时据此拒绝更高版本的备份 */
+        const val VERSION = 2
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        /**
+         * 关闭并清空单例，使下次 getInstance 重新打开数据库文件。
+         * 仅用于「从备份恢复」：旧实例持有已被替换的库连接，必须丢弃。
+         */
+        fun reset() {
+            synchronized(this) {
+                INSTANCE?.close()
+                INSTANCE = null
+            }
+        }
 
         /**
          * v1 → v2：新增 stock_check_item 快照表。

@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +46,10 @@ fun SyncScreen(vm: AppViewModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.importXlsx(uri)
     }
+    val backupPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.prepareRestore(uri)
+    }
+    val pending by vm.pendingRestore.collectAsStateWithLifecycle()
 
     Column(
         Modifier
@@ -123,6 +129,29 @@ fun SyncScreen(vm: AppViewModel) {
             ) { Text("立即上传到电脑") }
         }
 
+        SectionCard("数据库备份与恢复") {
+            Text(
+                "备份会把全库（含未上传单据）和同步进度一起打包成 zip，可发到电脑 / 微信保存。换机或重装后用它恢复，避免丢单据。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = { vm.backupDatabase() }, modifier = Modifier.weight(1f)) { Text("立即备份") }
+                OutlinedButton(
+                    onClick = { backupPicker.launch(arrayOf("application/zip", "*/*")) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("从备份恢复") }
+            }
+            Text(
+                "备份目录：${com.peijian.pda.backup.DbBackup.backupDir(androidx.compose.ui.platform.LocalContext.current).absolutePath}",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         SectionCard("数据状态") {
             InfoRow("已导入箱数", "$allBoxes")
             InfoRow("在库箱数", "$stockBoxes")
@@ -143,6 +172,36 @@ fun SyncScreen(vm: AppViewModel) {
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+
+    val restore = pending
+    if (restore != null) {
+        AlertDialog(
+            onDismissRequest = { vm.cancelRestore() },
+            title = { Text("确认恢复数据库？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("此操作会覆盖当前全部数据，恢复后应用自动重启。", fontSize = 13.sp)
+                    com.peijian.pda.ui.InfoLine("备份箱数", "${restore.manifest.boxCount}")
+                    com.peijian.pda.ui.InfoLine("数据库版本", "${restore.manifest.dbVersion}")
+                    com.peijian.pda.ui.InfoLine("未上传发货单", "${restore.manifest.unsyncedShipments}")
+                    com.peijian.pda.ui.InfoLine("未上传盘点", "${restore.manifest.unsyncedChecks}")
+                    com.peijian.pda.ui.InfoLine(
+                        "创建时间",
+                        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                            .format(java.util.Date(restore.manifest.createdAt))
+                    )
+                    Text("恢复前会自动为当前库另存一份备份。", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.confirmRestore() }) { Text("确认恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.cancelRestore() }) { Text("取消") }
+            }
+        )
     }
 }
 

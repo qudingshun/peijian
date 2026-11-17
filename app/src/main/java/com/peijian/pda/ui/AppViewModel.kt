@@ -5,7 +5,9 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.peijian.pda.BuildConfig
 import com.peijian.pda.PeijianApp
+import com.peijian.pda.backup.DbBackup
 import com.peijian.pda.data.PackingRepository
 import com.peijian.pda.data.dao.BoxListRow
 import com.peijian.pda.data.dao.ShipmentRow
@@ -37,6 +39,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Date
+import java.util.Locale
 
 data class SettingsState(
     val serverUrl: String = "",
@@ -49,7 +53,7 @@ data class SettingsState(
     val lastSyncAt: Long = 0
 )
 
-data class UiEvent(val text: String, val ok: Boolean = true)
+data class UiEvent(val text: String, val ok: Boolean = true, val restart: Boolean = false)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -79,6 +83,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _settings = MutableStateFlow(readSettings())
     val settings: StateFlow<SettingsState> = _settings.asStateFlow()
+
+    /** 已校验、等待用户确认的备份（用于恢复确认弹窗） */
+    private val _pendingRestore = MutableStateFlow<DbBackup.Prepared?>(null)
+    val pendingRestore: StateFlow<DbBackup.Prepared?> = _pendingRestore.asStateFlow()
+
+    private val appVersion: String
+        get() = BuildConfig.VERSION_NAME
 
     fun readSettings() = SettingsState(
         serverUrl = prefs.serverUrl,
@@ -444,6 +455,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val r = Exporter.exportStocktake(getApplication(), db, checkId)
             emit("已导出 ${r.rows} 条扫描记录\n${r.file.absolutePath}")
             shareFile(r.file)
+        }
+    }
+
+    /* ---------------- 数据库备份 / 恢复 ---------------- */
+
+    fun backupDatabase() {
+        runBusy("正在备份数据库…") {
+            val ctx = getApplication<Application>()
+            val boxes = packingDao.totalBoxCount()
+            val unsyncedShip = shipmentDao.unsynced().size
+            val unsyncedCheck = checkDao.unsynced().size
+            val r = DbBackup.export(ctx, db, appVersion, boxes, unsyncedShip, unsyncedCheck)
+            emit("备份完成（${r.manifest.boxCount} 箱 / ${r.manifest.dbBytes / 1024} KB）\n${r.file.absolutePath}" +
+                if (r.note.isNotBlank()) "\n${r.note}" else "")
+            runCatching { Exporter.shareAs(ctx, r.file, "application/zip") }
+        }
+    }
+
+    /** 选择备份文件后先校验，成功后进入确认步骤；失败发事件提示。 */
+    fun prepareRestore(uri: Uri) {
+        runBusy("正在校验备份…") {
+            val prepared = DbBackup.prepare(getApplication(), uri)
+            _pendingRestore.value = prepared
+            emit("备份校验通过：${prepared.manifest.boxCount} 箱，创建于 " +
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(prepared.manifest.createdAt)))
+        }
+    }
+
+    fun cancelRestore() {
+        val p = _pendingRestore.value ?: return
+        viewModelScope.launch { DbBackup.discard(getApplication(), p) }
+        _pendingRestore.value = null
+    }
+
+    /** 用户确认后执行恢复；成功后投递带 restart 标志的事件，由 UI 重启进程。 */
+    fun confirmRestore() {
+        val prepared = _pendingRestore.value ?: return
+        runBusy("正在恢复数据库…") {
+            val ctx = getApplication<Application>()
+            val boxes = packingDao.totalBoxCount()
+            val unsyncedShip = shipmentDao.unsynced().size
+            val unsyncedCheck = checkDao.unsynced().size
+            val r = DbBackup.restore(ctx, db, prepared, appVersion, boxes, unsyncedShip, unsyncedCheck)
+            _pendingRestore.value = null
+            val pre = if (r.preBackup != null) "（恢复前的库已另存备份）" else ""
+            _events.tryEmit(
+                UiEvent("恢复成功：$r.manifest.boxCount 箱$pre\n应用即将重启…", ok = true, restart = true)
+            )
         }
     }
 

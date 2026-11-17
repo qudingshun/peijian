@@ -67,8 +67,15 @@ fun AppRoot(vm: AppViewModel) {
 
     LaunchedEffect(Unit) { vm.loadOpenState() }
 
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     LaunchedEffect(Unit) {
-        vm.events.collect { e -> snackbar.showSnackbar(e.text) }
+        vm.events.collect { e ->
+            snackbar.showSnackbar(e.text)
+            if (e.restart) {
+                kotlinx.coroutines.delay(1200)
+                restartApp(appContext)
+            }
+        }
     }
 
     // 扫码枪广播：只把内容送进当前业务页
@@ -146,6 +153,16 @@ fun AppRoot(vm: AppViewModel) {
             }
         }
     }
+}
+
+/** 恢复数据库后重启进程：Room 与 ViewModel 都持有旧库连接，必须整进程重建。 */
+private fun restartApp(context: android.content.Context) {
+    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+    if (intent != null) {
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        context.startActivity(intent)
+    }
+    android.os.Process.killProcess(android.os.Process.myPid())
 }
 
 @Composable

@@ -243,13 +243,18 @@ object Exporter {
     /* ---------------- 分享 ---------------- */
 
     fun share(context: Context, file: File) {
+        shareAs(context, file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    }
+
+    /** 按指定 MIME 分享任意文件（备份 zip 等）。 */
+    fun shareAs(context: Context, file: File, mime: String) {
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "发送导出文件"))
+        context.startActivity(Intent.createChooser(intent, "发送文件"))
     }
 
     fun openFolderHint(context: Context): String = exportDir(context).absolutePath

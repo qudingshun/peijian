@@ -177,6 +177,9 @@ interface PackingDao {
     @Query("SELECT COUNT(*) FROM packing_box")
     fun observeBoxCount(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM packing_box")
+    suspend fun totalBoxCount(): Int
+
     @Query("SELECT MAX(rev) FROM packing_box")
     suspend fun maxRev(): Long?
 
