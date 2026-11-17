@@ -165,11 +165,14 @@ class PackingRepository(private val db: AppDatabase) {
         val exact = packing.findExactByNorm(norm)
         val tail = if (exact.isEmpty()) packing.matchBarcodeTail(norm) else emptyList()
         val fallback = if (exact.isEmpty() && tail.isEmpty()) {
-            val (_, orderNo, boxNo) = BarcodeRules.split(code)
-            // 生产单号形如 P108580；过短或纯数字的片段不参与反查，避免误命中
-            if (orderNo.length >= 4 && orderNo.any { it.isLetter() } && boxNo.isNotBlank()) {
-                packing.matchOrderBox(orderNo, BarcodeRules.normalizeBoxNo(boxNo))
-            } else emptyList()
+            // 纯拼接串无分隔符，单号/箱号边界不唯一；穷举所有合理拆分查库，
+            // 命中多条交给 ScanResolver 报歧义，而不是用单一正则猜错边界。
+            BarcodeRules.splitCandidates(code).flatMap { (_, orderNo, boxNo) ->
+                // 生产单号形如 P108580；过短或纯数字的片段不参与反查，避免误命中
+                if (orderNo.length >= 4 && orderNo.any { it.isLetter() } && boxNo.isNotBlank()) {
+                    packing.matchOrderBox(orderNo, boxNo)
+                } else emptyList()
+            }.distinctBy { it.id }
         } else emptyList()
 
         return when (val outcome = ScanResolver.resolve(exact, tail, fallback)) {
@@ -364,7 +367,7 @@ class PackingRepository(private val db: AppDatabase) {
                         )
                     }
                     val expected = box.status == BoxStatus.IN_STOCK
-                    checks.insertScan(
+                    val scanId = checks.insertScan(
                         StockCheckScan(
                             checkId = checkId,
                             boxId = box.id,
@@ -376,6 +379,20 @@ class PackingRepository(private val db: AppDatabase) {
                             operator = operator
                         )
                     )
+                    // 把箱内配件复制成快照：此后源表改动不会改写这次盘点的实盘数
+                    checks.insertItems(lookup.items.map { it ->
+                        com.peijian.pda.data.entity.StockCheckItem(
+                            scanId = scanId,
+                            checkId = checkId,
+                            boxId = box.id,
+                            partCode = it.partCode,
+                            englishName = it.englishName,
+                            partName = it.partName,
+                            quantity = it.quantity,
+                            machineModel = it.machineModel,
+                            remark = it.remark
+                        )
+                    })
                     ScanResult(
                         if (expected) ScanStatus.OK else ScanStatus.ALREADY_SHIPPED,
                         code, box, lookup.items,
@@ -394,6 +411,7 @@ class PackingRepository(private val db: AppDatabase) {
     suspend fun cancelCheck(id: Long): Boolean = db.withTransaction {
         val c = checks.findById(id) ?: return@withTransaction false
         if (c.status == StockCheckStatus.FINISHED) return@withTransaction false
+        checks.deleteItemsOfCheck(id)
         checks.deleteScans(id)
         checks.deleteCheck(id)
         true

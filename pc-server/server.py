@@ -206,9 +206,16 @@ def excel_date_to_millis(raw: str) -> int | None:
 
 
 def parse_xlsx(path: Path) -> tuple[list[dict], dict]:
-    """返回 (boxes, report)。使用 zip+XML 直读，22k 行约 1-2 秒。"""
-    started = time.time()
-    z = zipfile.ZipFile(path)
+    """返回 (boxes, report)。使用 zip+XML 直读，22k 行约 1-2 秒。
+
+    用 with 管理 ZipFile，确保解析完成或抛异常时都释放文件句柄
+    （Windows 上用户常开着 Excel，泄漏句柄会导致后续重命名/替换失败）。
+    """
+    with zipfile.ZipFile(path) as z:
+        return _parse_xlsx_zip(z, time.time())
+
+
+def _parse_xlsx_zip(z: zipfile.ZipFile, started: float) -> tuple[list[dict], dict]:
     names = z.namelist()
 
     shared: list[str] = []

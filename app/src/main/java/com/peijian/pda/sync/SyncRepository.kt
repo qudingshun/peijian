@@ -125,8 +125,8 @@ class SyncRepository(
         val checks = db.stockCheckDao().unsynced()
         for (c in checks) {
             val scans = db.stockCheckDao().scanEntities(c.id)
-            client.pushStockCheck(c, scans) { boxId ->
-                db.packingDao().itemsOfBox(boxId).map {
+            client.pushStockCheck(c, scans) { scanId ->
+                db.stockCheckDao().itemsOfScan(scanId).map {
                     Triple(it.partCode, it.partName, it.quantity)
                 }
             }

@@ -176,6 +176,28 @@ data class StockCheckScan(
     val operator: String = ""
 )
 
+/**
+ * 盘点扫到箱时，把箱内配件复制一份作为快照。
+ * 这样历史盘点报表不随源表改动（applyBoxes 会 deleteItems 重建 packing_item）而变化。
+ * scanId 关联到具体的 [StockCheckScan]，boxId 冗余便于回填与排查。
+ */
+@Entity(
+    tableName = "stock_check_item",
+    indices = [Index("scanId"), Index("checkId"), Index("boxId"), Index("partCode")]
+)
+data class StockCheckItem(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val scanId: Long,
+    val checkId: Long,
+    val boxId: Long?,
+    val partCode: String,
+    val englishName: String = "",
+    val partName: String = "",
+    val quantity: Int = 0,
+    val machineModel: String = "",
+    val remark: String = ""
+)
+
 /** 简单键值配置（与 SharedPreferences 双写，便于导出/迁移） */
 @Entity(tableName = "sync_state")
 data class SyncState(

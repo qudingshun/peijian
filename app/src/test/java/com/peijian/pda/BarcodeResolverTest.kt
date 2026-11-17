@@ -79,4 +79,27 @@ class BarcodeResolverTest {
         assertTrue(!BarcodeRules.looksLikeBarcode("801"))
         assertTrue(BarcodeRules.looksLikeBarcode("P108580-1"))
     }
+
+    @Test
+    fun pure_concat_enumerates_all_box_lengths() {
+        // W00305 + P108580 + 12：真正的拆分（箱号 12）必须在候选里
+        val cands = BarcodeRules.splitCandidates("W00305P10858012")
+        assertTrue("箱号12的拆分应存在", cands.any { it.second == "P108580" && it.third == "12" })
+        // 旧正则会切出 P1085801/2，也应作为候选交给数据库裁决
+        assertTrue("箱号2的拆分也应作为候选", cands.any { it.second == "P1085801" && it.third == "2" })
+    }
+
+    @Test
+    fun three_digit_box_number_is_preserved() {
+        val cands = BarcodeRules.splitCandidates("W00305P108580123")
+        assertTrue("三位数箱号123应被保留为一个候选",
+            cands.any { it.second == "P108580" && it.third == "123" })
+    }
+
+    @Test
+    fun dashed_code_has_single_candidate() {
+        val cands = BarcodeRules.splitCandidates("W00305-P108580-12")
+        assertEquals(1, cands.size)
+        assertEquals(Triple("W00305", "P108580", "12"), cands.first())
+    }
 }

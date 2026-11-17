@@ -249,7 +249,7 @@ class SyncClient(private val prefs: Prefs) {
     suspend fun pushStockCheck(
         check: StockCheck,
         scans: List<StockCheckScan>,
-        itemsOfBox: suspend (Long) -> List<Triple<String, String, Int>>
+        itemsOfScan: suspend (Long) -> List<Triple<String, String, Int>>
     ): Unit = withContext(Dispatchers.IO) {
         val root = JSONObject()
         root.put("device", prefs.deviceName)
@@ -268,7 +268,8 @@ class SyncClient(private val prefs: Prefs) {
             o.put("expected", s.expected)
             o.put("scannedAt", s.scannedAt)
             val ia = JSONArray()
-            s.boxId?.let { bid -> itemsOfBox(bid) }?.forEach { (code, name, qty) ->
+            // 用扫描时的快照上传，而非当前明细——保证历史盘点上报可追溯
+            itemsOfScan(s.id).forEach { (code, name, qty) ->
                 ia.put(JSONObject().put("partCode", code).put("partName", name).put("quantity", qty))
             }
             o.put("items", ia)

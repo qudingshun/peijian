@@ -14,6 +14,7 @@ import com.peijian.pda.data.entity.Shipment
 import com.peijian.pda.data.entity.ShipmentBox
 import com.peijian.pda.data.entity.ShipmentItem
 import com.peijian.pda.data.entity.StockCheck
+import com.peijian.pda.data.entity.StockCheckItem
 import com.peijian.pda.data.entity.StockCheckScan
 import com.peijian.pda.data.entity.SyncState
 import kotlinx.coroutines.flow.Flow
@@ -468,8 +469,17 @@ interface StockCheckDao {
     @Insert
     suspend fun insertScan(s: StockCheckScan): Long
 
+    @Insert
+    suspend fun insertItem(item: StockCheckItem)
+
+    @Insert
+    suspend fun insertItems(items: List<StockCheckItem>)
+
     @Query("SELECT * FROM stock_check_scan WHERE checkId=:cid AND boxId=:boxId LIMIT 1")
     suspend fun findScan(cid: Long, boxId: Long): StockCheckScan?
+
+    @Query("SELECT * FROM stock_check_item WHERE scanId=:scanId ORDER BY id")
+    suspend fun itemsOfScan(scanId: Long): List<StockCheckItem>
 
     @Query("SELECT COUNT(*) FROM stock_check_scan WHERE checkId=:cid")
     fun observeScanCount(cid: Long): Flow<Int>
@@ -481,15 +491,15 @@ interface StockCheckDao {
 
     @Query(
         "SELECT COALESCE(SUM(i.quantity),0) FROM stock_check_scan s " +
-            "JOIN packing_item i ON i.boxId=s.boxId WHERE s.checkId=:cid AND s.expected=1"
+            "JOIN stock_check_item i ON i.scanId=s.id WHERE s.checkId=:cid AND s.expected=1"
     )
     fun observeScannedQty(cid: Long): Flow<Long>
 
     @Query(
         "SELECT s.id AS id, s.barcode AS barcode, s.orderNo AS orderNo, s.boxNo AS boxNo, " +
             "s.expected AS expected, s.scannedAt AS scannedAt, " +
-            "COALESCE((SELECT GROUP_CONCAT(i.partCode || ' ' || i.quantity) FROM packing_item i WHERE i.boxId=s.boxId),'') AS partSummary, " +
-            "COALESCE((SELECT SUM(i.quantity) FROM packing_item i WHERE i.boxId=s.boxId),0) AS totalQty " +
+            "COALESCE((SELECT GROUP_CONCAT(i.partCode || ' ' || i.quantity) FROM stock_check_item i WHERE i.scanId=s.id),'') AS partSummary, " +
+            "COALESCE((SELECT SUM(i.quantity) FROM stock_check_item i WHERE i.scanId=s.id),0) AS totalQty " +
             "FROM stock_check_scan s WHERE s.checkId=:cid ORDER BY s.scannedAt DESC LIMIT :limit"
     )
     fun observeScans(cid: Long, limit: Int): Flow<List<StockScanRow>>
@@ -497,8 +507,8 @@ interface StockCheckDao {
     @Query(
         "SELECT s.id AS id, s.barcode AS barcode, s.orderNo AS orderNo, s.boxNo AS boxNo, " +
             "s.expected AS expected, s.scannedAt AS scannedAt, " +
-            "COALESCE((SELECT GROUP_CONCAT(i.partCode || ' ' || i.quantity) FROM packing_item i WHERE i.boxId=s.boxId),'') AS partSummary, " +
-            "COALESCE((SELECT SUM(i.quantity) FROM packing_item i WHERE i.boxId=s.boxId),0) AS totalQty " +
+            "COALESCE((SELECT GROUP_CONCAT(i.partCode || ' ' || i.quantity) FROM stock_check_item i WHERE i.scanId=s.id),'') AS partSummary, " +
+            "COALESCE((SELECT SUM(i.quantity) FROM stock_check_item i WHERE i.scanId=s.id),0) AS totalQty " +
             "FROM stock_check_scan s WHERE s.checkId=:cid ORDER BY s.expected ASC, s.id"
     )
     suspend fun scans(cid: Long): List<StockScanRow>
@@ -522,14 +532,14 @@ interface StockCheckDao {
 
     @Query(
         "SELECT i.partCode AS partCode, MAX(i.partName) AS partName, SUM(i.quantity) AS totalQty " +
-            "FROM stock_check_scan s JOIN packing_item i ON i.boxId=s.boxId " +
+            "FROM stock_check_scan s JOIN stock_check_item i ON i.scanId=s.id " +
             "WHERE s.checkId=:cid AND s.expected=1 GROUP BY i.partCode"
     )
     suspend fun scannedStockByPart(cid: Long): List<PartQtyRow>
 
     @Query(
         "SELECT i.partCode AS partCode, MAX(i.partName) AS partName, SUM(i.quantity) AS totalQty " +
-            "FROM stock_check_scan s JOIN packing_item i ON i.boxId=s.boxId " +
+            "FROM stock_check_scan s JOIN stock_check_item i ON i.scanId=s.id " +
             "WHERE s.checkId=:cid AND s.expected=0 GROUP BY i.partCode"
     )
     suspend fun extraStockByPart(cid: Long): List<PartQtyRow>
@@ -546,6 +556,9 @@ interface StockCheckDao {
 
     @Query("SELECT COUNT(*) FROM stock_check_scan WHERE checkId=:cid AND expected=0")
     suspend fun extraCount(cid: Long): Int
+
+    @Query("DELETE FROM stock_check_item WHERE checkId=:cid")
+    suspend fun deleteItemsOfCheck(cid: Long)
 
     @Query("DELETE FROM stock_check_scan WHERE checkId=:cid")
     suspend fun deleteScans(cid: Long)
