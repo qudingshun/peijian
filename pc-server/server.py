@@ -514,6 +514,58 @@ def check_token(request: Request) -> None:
         raise HTTPException(401, "配对令牌不对")
 
 
+# 单页上限：防止误传超大 limit 拖垮服务端；0 表示不分页（老客户端兼容）
+PACKING_PAGE_MAX = 2000
+
+
+def packing_page(conn: sqlite3.Connection, since: int, limit: int = 0, after_key: str = "") -> tuple[list[dict], dict]:
+    """纯逻辑：按 (rev, source_key) 复合游标分页查询待拉取的箱。
+
+    - since: 只取 rev > since 的箱；
+    - after_key: 上一页最后一个 source_key，用于在相同 rev 内继续（一批箱共享 rev）；
+    - limit<=0: 不分页，返回全部（老客户端兼容路径）。
+    返回 (boxes, meta)，meta 含 rev / has_more / next_since / next_after_key。
+    """
+    rev = int(meta_get(conn, "rev", "0") or 0)
+    if limit <= 0:
+        rows = conn.execute(
+            "SELECT payload, rev, status, source_key FROM boxes WHERE rev > ? "
+            "ORDER BY rev, source_key", (since,)
+        ).fetchall()
+    else:
+        limit = min(limit, PACKING_PAGE_MAX)
+        # (rev, source_key) > (since, after_key) 的展开式，兼容老 SQLite
+        rows = conn.execute(
+            "SELECT payload, rev, status, source_key FROM boxes "
+            "WHERE rev > ? OR (rev = ? AND source_key > ?) "
+            "ORDER BY rev, source_key LIMIT ?", (since, since, after_key, limit)
+        ).fetchall()
+
+    boxes = []
+    for row in rows:
+        box = json.loads(row["payload"])
+        box["rev"] = row["rev"]
+        box["status"] = row["status"]   # 服务端权威状态
+        boxes.append(box)
+
+    if limit <= 0:
+        meta = {"rev": rev, "has_more": False, "next_since": rev, "next_after_key": "", "count": len(boxes)}
+    else:
+        # 本页满额才可能有下一页；游标指向本页最后一条
+        has_more = len(rows) == limit
+        if rows:
+            last = rows[-1]
+            next_since, next_after_key = last["rev"], last["source_key"]
+        else:
+            next_since, next_after_key = since, after_key
+        meta = {
+            "rev": rev, "has_more": has_more,
+            "next_since": next_since, "next_after_key": next_after_key,
+            "count": len(boxes),
+        }
+    return boxes, meta
+
+
 def reconcile_diff(server_boxes: list[dict], reported: list[dict]) -> dict:
     """纯逻辑：对账差异计算，不碰数据库，便于单元测试。
 
@@ -581,25 +633,18 @@ def stats(request: Request):
 
 
 @app.get("/api/v1/packing")
-def packing(request: Request, since: int = 0):
+def packing(request: Request, since: int = 0, limit: int = 0, after_key: str = ""):
     check_token(request)
     ensure_fresh()
     with db() as conn:
-        rev = int(meta_get(conn, "rev", "0") or 0)
-        rows = conn.execute(
-            "SELECT payload, rev, status FROM boxes WHERE rev > ? ORDER BY rev, source_key", (since,)
-        ).fetchall()
-        boxes = []
-        for row in rows:
-            box = json.loads(row["payload"])
-            box["rev"] = row["rev"]
-            # 状态由服务端权威下发，PDA 换机拉全量时不会把已发出箱复活
-            box["status"] = row["status"]
-            boxes.append(box)
+        boxes, meta = packing_page(conn, since, limit, after_key)
         return {
             "ok": True,
-            "rev": rev,
-            "count": len(boxes),
+            "rev": meta["rev"],
+            "count": meta["count"],
+            "has_more": meta["has_more"],
+            "next_since": meta["next_since"],
+            "next_after_key": meta["next_after_key"],
             "serverTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "boxes": boxes,
         }
