@@ -8,8 +8,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.peijian.pda.logic.PackDate
 import java.time.LocalDate
-import java.time.ZoneId
 
 class BarcodeRulesTest {
 
@@ -64,8 +64,8 @@ class BarcodeRulesTest {
 
     @Test
     fun date_parsesExcelSerialAndText() {
-        val expected = LocalDate.of(2024, 5, 5)
-            .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val expected = PackDate.atDay(LocalDate.of(2024, 5, 5))
+        assertEquals(1714838400000L, expected) // 2024-05-05 00:00 UTC+8，固化不随时间区漂移
         // 45417 是源表第一行的打包日期（2024-05-05）
         assertEquals(expected, XlsxReader.excelDateToMillis(45417.0))
         assertEquals(expected, PackingImporter.parseDate("45417"))
@@ -90,8 +90,7 @@ class BarcodeRulesTest {
 
     @Test
     fun formatDate_isStable() {
-        val ms = LocalDate.of(2024, 5, 5)
-            .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val ms = PackDate.atDay(LocalDate.of(2024, 5, 5))
         assertEquals("2024-05-05", PackingImporter.formatDate(ms))
         assertEquals("", PackingImporter.formatDate(null))
         assertNotNull(PackingImporter.formatDate(System.currentTimeMillis()))

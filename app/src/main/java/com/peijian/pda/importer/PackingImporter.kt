@@ -1,9 +1,9 @@
 package com.peijian.pda.importer
 
 import com.peijian.pda.barcode.BarcodeRules
+import com.peijian.pda.logic.PackDate
 import java.io.File
 import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -207,14 +207,14 @@ object PackingImporter {
         for (fmt in dateFormats) {
             runCatching {
                 val d = LocalDate.parse(t, DateTimeFormatter.ofPattern(fmt, Locale.US))
-                return d.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                return PackDate.atDay(d)
             }
         }
         // 带时间的文本：取前 10 位
         if (t.length >= 10) {
             runCatching {
                 val d = LocalDate.parse(t.substring(0, 10), DateTimeFormatter.ISO_LOCAL_DATE)
-                return d.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                return PackDate.atDay(d)
             }
         }
         return null
@@ -222,7 +222,7 @@ object PackingImporter {
 
     fun formatDate(millis: Long?): String =
         millis?.let {
-            java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().format(dayFormat)
+            java.time.Instant.ofEpochMilli(it).atZone(PackDate.ZONE).toLocalDate().format(dayFormat)
         } ?: ""
 
     private class MutableBox(

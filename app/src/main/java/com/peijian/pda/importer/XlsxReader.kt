@@ -1,6 +1,7 @@
 package com.peijian.pda.importer
 
 import android.util.Xml
+import com.peijian.pda.logic.PackDate
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.InputStream
@@ -211,11 +212,6 @@ object XlsxReader {
         return a to b
     }
 
-    /** Excel 序列号（1900 日期系统）→ epoch mills，取当天 00:00 */
-    fun excelDateToMillis(serial: Double): Long? {
-        if (serial < 1 || serial > 80000) return null
-        val days = serial.toLong()
-        val date = java.time.LocalDate.of(1899, 12, 30).plusDays(days)
-        return date.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-    }
+    /** Excel 序列号（1900 日期系统）→ 固定 UTC+8 当天 00:00 的 epoch 毫秒。 */
+    fun excelDateToMillis(serial: Double): Long? = PackDate.fromSerial(serial)
 }

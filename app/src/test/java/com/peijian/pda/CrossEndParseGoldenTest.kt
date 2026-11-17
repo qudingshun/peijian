@@ -59,6 +59,7 @@ class CrossEndParseGoldenTest {
         // 首箱规范化字段
         val first = boxes.first { it.orderNo == "P108990" && it.boxNo == "1" && it.customerCode == "W00009" }
         assertEquals("W00009-P108990-1", BarcodeRules.build(first.customerCode, first.orderNo, first.boxNo))
+        // 2024-07-03 00:00 UTC+8：固定 zone 后不随宿主/设备时区漂移（见 PackDate）
         assertEquals(1719936000000L, first.packDate)
         assertEquals(0.057, first.volume!!, 1e-9)
         assertEquals(10.22, first.grossWeight!!, 1e-9)
