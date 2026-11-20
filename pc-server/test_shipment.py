@@ -71,5 +71,27 @@ class BoxSeqTest(unittest.TestCase):
                 self.assertEqual(server.box_seq(value), 0)
 
 
+class RouteWiringTest(unittest.TestCase):
+    """路由必须绑定到正确的处理函数。
+
+    回归背景：新增纯逻辑函数时误把 `@app.post(...)` 留在原处，导致
+    `/api/v1/shipments` 实际执行 `plan_shipment_targets(codes, found)`，
+    PDA 上传整单收到 422；单元测试直接调函数发现不了。
+    """
+
+    def test_critical_routes_bound_to_handlers(self):
+        expected = {
+            "/api/v1/shipments": "receive_shipment",
+            "/api/v1/stockchecks": "receive_stockcheck",
+            "/api/v1/packing": "packing",
+            "/api/v1/reconcile": "reconcile",
+        }
+        routes = {r.path: r for r in server.app.routes if getattr(r, "path", "") in expected}
+        for path, handler in expected.items():
+            with self.subTest(path=path):
+                self.assertIn(path, routes)
+                self.assertEqual(routes[path].endpoint.__name__, handler)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

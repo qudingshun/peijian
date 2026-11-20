@@ -79,6 +79,32 @@ class PackingPagingTest(unittest.TestCase):
         row = next(b for b in boxes if b["sourceKey"] == "W000|P00000|000")
         self.assertEqual(row["status"], "SHIPPED")
 
+    def test_first_page_excludes_cursor_rev(self):
+        """since 是「已完整同步到的 rev」，首屏不能再把 rev==since 的箱下发一次。
+
+        回归背景：真机全量拉取后 lastRev=1，再点拉取仍会重下 20929 箱；
+        原因首屏 SQL 也带了 rev = since，把最后一批整批重发。
+        """
+        conn = make_db(10, [1] * 10)
+        boxes, meta = server.packing_page(conn, 1, 3, "")
+        self.assertEqual(boxes, [], "首屏应只返回 rev>since")
+        self.assertFalse(meta["has_more"])
+
+    def test_pull_from_last_rev_only_gets_new_boxes(self):
+        conn = make_db(10, [1] * 5 + [2] * 5)
+        out, since, after, guard = [], 1, "", 0
+        while True:
+            boxes, meta = server.packing_page(conn, since, 3, after)
+            out.extend(b["sourceKey"] for b in boxes)
+            if not meta["has_more"]:
+                break
+            since, after = meta["next_since"], meta["next_after_key"]
+            guard += 1
+            assert guard < 100, "分页未终止"
+        self.assertEqual(len(out), 5, "只应拉到 rev=2 的 5 箱")
+        got = {b["sourceKey"] for b in server.packing_page(conn, 1, 0)[0]}
+        self.assertEqual(set(out), got, "分页结果应与全量 rev>1 一致")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

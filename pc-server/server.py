@@ -550,8 +550,8 @@ PACKING_PAGE_MAX = 2000
 def packing_page(conn: sqlite3.Connection, since: int, limit: int = 0, after_key: str = "") -> tuple[list[dict], dict]:
     """纯逻辑：按 (rev, source_key) 复合游标分页查询待拉取的箱。
 
-    - since: 只取 rev > since 的箱；
-    - after_key: 上一页最后一个 source_key，用于在相同 rev 内继续（一批箱共享 rev）；
+    - since: 已完整同步到的 rev，只取 rev > since 的箱（首屏）；
+    - after_key: 上一页最后一个 source_key，用于在相同 rev 内续页；
     - limit<=0: 不分页，返回全部（老客户端兼容路径）。
     返回 (boxes, meta)，meta 含 rev / has_more / next_since / next_after_key。
     """
@@ -563,12 +563,21 @@ def packing_page(conn: sqlite3.Connection, since: int, limit: int = 0, after_key
         ).fetchall()
     else:
         limit = min(limit, PACKING_PAGE_MAX)
-        # (rev, source_key) > (since, after_key) 的展开式，兼容老 SQLite
-        rows = conn.execute(
-            "SELECT payload, rev, status, source_key FROM boxes "
-            "WHERE rev > ? OR (rev = ? AND source_key > ?) "
-            "ORDER BY rev, source_key LIMIT ?", (since, since, after_key, limit)
-        ).fetchall()
+        if after_key:
+            # 续页：same rev 内继续（(rev, source_key) > (since, after_key) 的展开式）
+            rows = conn.execute(
+                "SELECT payload, rev, status, source_key FROM boxes "
+                "WHERE rev > ? OR (rev = ? AND source_key > ?) "
+                "ORDER BY rev, source_key LIMIT ?", (since, since, after_key, limit)
+            ).fetchall()
+        else:
+            # 首屏：since 是「已完整同步到的 rev」，其自身必须排除。
+            # 若这里也带 rev = since，则每轮增量都会把最后一批（例如全库 rev=1）
+            # 重新下发一遍；续页由 next_after_key 非空区分，不会误伤。
+            rows = conn.execute(
+                "SELECT payload, rev, status, source_key FROM boxes "
+                "WHERE rev > ? ORDER BY rev, source_key LIMIT ?", (since, limit)
+            ).fetchall()
 
     boxes = []
     for row in rows:
@@ -679,7 +688,6 @@ def packing(request: Request, since: int = 0, limit: int = 0, after_key: str = "
         }
 
 
-@app.post("/api/v1/shipments")
 def plan_shipment_targets(codes: list[str], found: dict[str, list]) -> tuple[list[str], list[str]]:
     """纯逻辑：把本单箱码映射为可标发出的 source_key。
 
@@ -699,6 +707,7 @@ def plan_shipment_targets(codes: list[str], found: dict[str, list]) -> tuple[lis
     return targets, conflicts
 
 
+@app.post("/api/v1/shipments")
 def receive_shipment(request: Request, body: dict = Body(...)):
     check_token(request)
     uid = str(body.get("uid") or "").strip()
@@ -931,8 +940,8 @@ def export_shipments(request: Request):
     check_token(request)
     with db() as conn:
         shipments = [json.loads(r["payload"]) for r in conn.execute("SELECT payload FROM shipments ORDER BY received_at")]
-    headers = ["发货单号", "客户编码", "客户名称", "收货人", "操作员", "箱码", "生产单号", "箱号", "配件编码", "配件名称", "数量", "扫描时间"]
-    widths = [18, 11, 28, 14, 10, 26, 12, 8, 20, 26, 8, 18]
+    headers = ["发货柜号", "客户编码", "客户名称", "操作员", "箱码", "生产单号", "箱号", "配件编码", "配件名称", "数量", "扫描时间"]
+    widths = [18, 11, 28, 10, 26, 12, 8, 20, 26, 8, 18]
 
     def build(wb: Workbook) -> None:
         ws = wb.active
@@ -943,14 +952,14 @@ def export_shipments(request: Request):
                 for i in b.get("items", []):
                     ts = b.get("scannedAt") or 0
                     ws.append([
-                        s.get("docNo", ""), s.get("customerCode", ""), s.get("customerName", ""), s.get("receiver", ""),
+                        s.get("docNo", ""), s.get("customerCode", ""), s.get("customerName", ""),
                         s.get("operator", ""), b.get("barcode", ""), b.get("orderNo", ""), b.get("boxNo", ""),
                         i.get("partCode", ""), i.get("partName", ""), i.get("quantity", 0),
                         datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if ts else "",
                     ])
         ws.auto_filter.ref = ws.dimensions
-        ws2 = wb.create_sheet("发货单汇总")
-        styled_sheet(ws2, ["发货单号", "客户", "箱数", "配件数量", "操作员", "完成时间"], [18, 30, 8, 12, 10, 20])
+        ws2 = wb.create_sheet("发货柜汇总")
+        styled_sheet(ws2, ["发货柜号", "客户", "箱数", "配件数量", "操作员", "完成时间"], [18, 30, 8, 12, 10, 20])
         for s in shipments:
             qty = sum(int(i.get("quantity", 0)) for b in s.get("boxes", []) for i in b.get("items", []))
             ws2.append([s.get("docNo", ""), s.get("customerName") or s.get("customerCode", ""), len(s.get("boxes", [])), qty,
