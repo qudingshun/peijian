@@ -16,6 +16,7 @@ import com.peijian.pda.data.entity.PackingItem
 import com.peijian.pda.data.entity.Shipment
 import com.peijian.pda.data.entity.ShipmentBox
 import com.peijian.pda.data.entity.ShipmentItem
+import com.peijian.pda.data.entity.ShipmentPlanBox
 import com.peijian.pda.data.entity.StockCheck
 import com.peijian.pda.data.entity.StockCheckItem
 import com.peijian.pda.data.entity.StockCheckScan
@@ -24,11 +25,11 @@ import com.peijian.pda.data.entity.SyncState
 @Database(
     entities = [
         PackingBox::class, PackingItem::class,
-        Shipment::class, ShipmentBox::class, ShipmentItem::class,
+        Shipment::class, ShipmentBox::class, ShipmentItem::class, ShipmentPlanBox::class,
         StockCheck::class, StockCheckScan::class, StockCheckItem::class,
         SyncState::class, OpLogEntry::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -39,7 +40,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         /** 供备份 manifest 记录，恢复时据此拒绝更高版本的备份 */
-        const val VERSION = 2
+        const val VERSION = 3
 
         @Volatile
         private var INSTANCE: AppDatabase? = null
@@ -93,13 +94,46 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v2 → v3：新增 shipment_plan_box 预选箱表（本次发货白名单） */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `shipment_plan_box` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`shipmentId` INTEGER NOT NULL, " +
+                        "`boxId` INTEGER NOT NULL, " +
+                        "`barcode` TEXT NOT NULL, " +
+                        "`orderNo` TEXT NOT NULL, " +
+                        "`boxNo` TEXT NOT NULL, " +
+                        "`customerCode` TEXT NOT NULL, " +
+                        "`customerName` TEXT NOT NULL, " +
+                        "`partSummary` TEXT NOT NULL DEFAULT '', " +
+                        "`totalQty` INTEGER NOT NULL DEFAULT 0, " +
+                        "`addedAt` INTEGER NOT NULL" +
+                        ")"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_shipment_plan_box_shipmentId_boxId` " +
+                        "ON `shipment_plan_box` (`shipmentId`, `boxId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_shipment_plan_box_shipmentId` " +
+                        "ON `shipment_plan_box` (`shipmentId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_shipment_plan_box_boxId` " +
+                        "ON `shipment_plan_box` (`boxId`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "peijian.db"
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
     }
 }

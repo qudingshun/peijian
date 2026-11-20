@@ -27,22 +27,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** targetSdk 29 + legacy 存储：Android 10 及以下需要运行时授权；更高版本一般直接可用 */
+    /**
+     * targetSdk 29 + legacy 存储：Android 6 ~ 11 都需要运行时授予读写权限。
+     *
+     * 之前只在 API <= 29 时申请，导致 Android 11（API 30）真机永远拿不到授权，
+     * 导出/备份静默退到 Android/data 专属目录（用户很难取文件）。API 31+ 分区存储
+     * 已强制生效，legacy 写入不再可用，交给导出/备份的 fallback 目录处理。
+     */
     private fun askStorage() {
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            val granted = ContextCompat.checkSelfPermission(
-                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                        Manifest.permission.READ_EXTERNAL_STORAGE
-                    ),
-                    1001
-                )
-            }
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                ),
+                1001
+            )
         }
     }
 }

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,6 +24,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,7 +40,6 @@ import com.peijian.pda.data.PackingRepository
 import com.peijian.pda.logic.DateText
 import com.peijian.pda.ui.AppViewModel
 import com.peijian.pda.ui.EmptyHint
-import com.peijian.pda.ui.InfoLine
 import com.peijian.pda.ui.ScanField
 import com.peijian.pda.ui.SectionCard
 
@@ -51,6 +52,7 @@ fun OutboundScreen(vm: AppViewModel) {
 
     var confirmFinish by remember { mutableStateOf(false) }
     var confirmCancel by remember { mutableStateOf(false) }
+    var showPlan by remember { mutableStateOf(true) }
 
     if (shipment == null) {
         StartShipmentForm(vm)
@@ -68,10 +70,7 @@ fun OutboundScreen(vm: AppViewModel) {
                     Column {
                         Text(s.docNo, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Text(
-                            listOfNotNull(
-                                s.customerName.ifBlank { s.customerCode },
-                                s.receiver.takeIf { it.isNotBlank() }?.let { "收货：$it" }
-                            ).joinToString(" · ").ifBlank { "未填客户" },
+                            s.customerName.ifBlank { s.customerCode }.takeIf { it.isNotBlank() } ?: "未填客户",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -87,10 +86,13 @@ fun OutboundScreen(vm: AppViewModel) {
                         Text("完成发货")
                     }
                     OutlinedButton(onClick = { confirmCancel = true }, modifier = Modifier.weight(1f)) {
-                        Text("取消发货单")
+                        Text("取消发货柜")
                     }
                 }
             }
+
+            // 预选箱（白名单）
+            PlanSection(vm, expanded = showPlan, onToggle = { showPlan = !showPlan })
 
             ScanField(
                 label = "扫描箱码（${settings.separator} 分隔）",
@@ -99,7 +101,13 @@ fun OutboundScreen(vm: AppViewModel) {
 
             lastScan?.let { r ->
                 val ok = r.status == PackingRepository.ScanStatus.OK
-                SectionCard(if (ok) "上一箱：登记成功" else "上一箱：${r.message}") {
+                val title = when (r.status) {
+                    PackingRepository.ScanStatus.OK -> "上一箱：登记成功"
+                    PackingRepository.ScanStatus.WRONG_CUSTOMER -> "报警：客户不符，未记录"
+                    PackingRepository.ScanStatus.NOT_IN_PLAN -> "报警：不在预选范围，未记录"
+                    else -> "上一箱：${r.message}"
+                }
+                SectionCard(title) {
                     if (r.box != null) {
                         Text(
                             r.box!!.barcode,
@@ -185,16 +193,86 @@ fun OutboundScreen(vm: AppViewModel) {
     if (confirmCancel) {
         AlertDialog(
             onDismissRequest = { confirmCancel = false },
-            title = { Text("取消这张发货单？") },
+            title = { Text("取消这个发货柜？") },
             text = { Text("已扫的 ${boxes.size} 箱会回到在库状态，本次扫描记录删除。") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmCancel = false
                     vm.cancelShipment()
-                }) { Text("取消发货单") }
+                }) { Text("取消发货柜") }
             },
             dismissButton = { TextButton(onClick = { confirmCancel = false }) { Text("返回") } }
         )
+    }
+}
+
+/** 预选箱白名单：搜索在库箱并勾选；勾选后仅白名单内箱可扫 */
+@Composable
+private fun PlanSection(vm: AppViewModel, expanded: Boolean, onToggle: () -> Unit) {
+    val candidates by vm.planCandidates.collectAsStateWithLifecycle()
+    val selected by vm.planBoxes.collectAsStateWithLifecycle()
+    val query by vm.planQuery.collectAsStateWithLifecycle()
+    val selectedIds = remember(selected) { selected.map { it.boxId }.toHashSet() }
+
+    SectionCard {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                "预选箱（本次发货范围）  已选 ${selected.size}",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp
+            )
+            TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "展开") }
+        }
+        Text(
+            "从不发货的箱里提前勾选本次要发的箱；勾选后只认清单内的箱，扫错会报警且不记录。不勾选则不限制。",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (expanded) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { vm.setPlanQuery(it) },
+                label = { Text("搜索箱码 / 单号 / 配件 / 客户", fontSize = 11.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            )
+            if (selected.isNotEmpty()) {
+                TextButton(onClick = { vm.clearPlan() }) { Text("清空已选（恢复不限制）") }
+            }
+            if (candidates.isEmpty()) {
+                EmptyHint("没有匹配的在库箱。")
+            } else {
+                Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    candidates.forEach { row ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (row.id in selectedIds) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(horizontal = 2.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = row.id in selectedIds,
+                                onCheckedChange = { vm.togglePlanBox(row) }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text("${row.orderNo} 箱${row.boxNo}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "${row.customerName.ifBlank { row.customerCode }} · ${row.partSummary} · ${row.totalQty}件",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -204,8 +282,24 @@ private fun StartShipmentForm(vm: AppViewModel) {
     var docNo by remember { mutableStateOf("FH" + DateText.docStamp()) }
     var customerCode by remember { mutableStateOf("") }
     var customerName by remember { mutableStateOf("") }
-    var receiver by remember { mutableStateOf("") }
+    var nameResolved by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
+
+    // 输入客户编码后自动带出客户名称（数据源：已导入/同步的箱表）
+    LaunchedEffect(customerCode) {
+        val code = customerCode.trim()
+        if (code.isEmpty()) {
+            nameResolved = false
+            return@LaunchedEffect
+        }
+        val resolved = vm.lookupCustomerName(code)
+        if (resolved != null && customerCode.trim() == code) {
+            customerName = resolved
+            nameResolved = true
+        } else {
+            nameResolved = false
+        }
+    }
 
     Column(
         Modifier
@@ -214,11 +308,11 @@ private fun StartShipmentForm(vm: AppViewModel) {
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        SectionCard("新建发货单") {
+        SectionCard("新建发货柜") {
             OutlinedTextField(
                 value = docNo,
                 onValueChange = { docNo = it },
-                label = { Text("发货单号", fontSize = 12.sp) },
+                label = { Text("发货柜号", fontSize = 12.sp) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -232,14 +326,12 @@ private fun StartShipmentForm(vm: AppViewModel) {
             OutlinedTextField(
                 value = customerName,
                 onValueChange = { customerName = it },
-                label = { Text("客户名称 / 发往哪里（选填）", fontSize = 12.sp) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            )
-            OutlinedTextField(
-                value = receiver,
-                onValueChange = { receiver = it },
-                label = { Text("收货人 / 物流单号（选填）", fontSize = 12.sp) },
+                label = {
+                    Text(
+                        if (nameResolved) "客户名称（已从数据源带出）" else "客户名称（选填，可按编码自动带出）",
+                        fontSize = 12.sp
+                    )
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             )
@@ -251,14 +343,16 @@ private fun StartShipmentForm(vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             )
             Button(
-                onClick = { vm.startShipment(docNo, customerCode, customerName, receiver, note) },
+                onClick = { vm.startShipment(docNo, customerCode, customerName, "", note) },
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-            ) { Text("建立发货单并开始扫码") }
+            ) { Text("建立发货柜并开始扫码") }
         }
 
         SectionCard("说明") {
-            Text("• 一张发货单 = 一次发货；扫箱时自动按箱内配件登记数量。", fontSize = 11.sp)
-            Text("• 同一箱不能重复扫；已发出的箱会提示。", fontSize = 11.sp)
+            Text("• 一个发货柜 = 一次发货；扫箱时自动按箱内配件登记数量。", fontSize = 11.sp)
+            Text("• 填了客户编码后，非该客户的箱扫码会报警且不记录。", fontSize = 11.sp)
+            Text("• 可先在「预选箱」勾选本次要发的箱；勾选后只认清单内的箱。", fontSize = 11.sp)
+            Text("• 同一箱不能重复扫；已发出的箱会提示并报警。", fontSize = 11.sp)
             Text("• 完成后可在「记录与查询 → 发货记录」导出出库明细。", fontSize = 11.sp)
             Text(
                 "当前操作员：${settings.operator.ifBlank { settings.deviceName }}（在设置里改）",

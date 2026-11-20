@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,6 +26,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.peijian.pda.barcode.BarcodeRules
 import com.peijian.pda.importer.PackingImporter
+import com.peijian.pda.scan.Haptics
+import com.peijian.pda.scan.Haptics.Stage as FeedbackStage
 import com.peijian.pda.ui.AppViewModel
 import com.peijian.pda.ui.SectionCard
 
@@ -38,6 +41,7 @@ fun SettingsScreen(vm: AppViewModel) {
     var device by remember(s.deviceName) { mutableStateOf(s.deviceName) }
     var separator by remember(s.separator) { mutableStateOf(s.separator) }
     var policy by remember(s.duplicatePolicy) { mutableStateOf(s.duplicatePolicy) }
+    var feedback by remember(s.feedback) { mutableStateOf(s.feedback) }
 
     Column(
         Modifier
@@ -151,8 +155,49 @@ fun SettingsScreen(vm: AppViewModel) {
             }
         }
 
+        SectionCard("扫码声音与震动") {
+            Text(
+                "每个环节可单独开关声音、选择震动强度（0=关闭）。告警环节用不同的报警音。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FeedbackStage.entries.forEach { stage ->
+                val setting = feedback[stage] ?: Haptics.defaults[stage] ?: Haptics.FeedbackSetting()
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Text(
+                        stage.label,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("声音", fontSize = 10.sp)
+                    Switch(
+                        checked = setting.sound,
+                        onCheckedChange = { feedback = feedback + (stage to setting.copy(sound = it)) }
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    (0..3).forEach { level ->
+                        FilterChip(
+                            selected = setting.level == level,
+                            onClick = { feedback = feedback + (stage to setting.copy(level = level)) },
+                            label = { Text(levelLabel(level), fontSize = 10.sp) }
+                        )
+                    }
+                }
+            }
+        }
+
         Button(
-            onClick = { vm.saveSettings(url, token, operator, device, separator, policy) },
+            onClick = {
+                vm.saveSettings(url, token, operator, device, separator, policy)
+                vm.saveFeedback(feedback)
+            },
             modifier = Modifier.fillMaxWidth()
         ) { Text("保存设置") }
 
@@ -170,4 +215,11 @@ fun SettingsScreen(vm: AppViewModel) {
             )
         }
     }
+}
+
+private fun levelLabel(level: Int): String = when (level) {
+    0 -> "关"
+    1 -> "轻"
+    2 -> "中"
+    else -> "强"
 }

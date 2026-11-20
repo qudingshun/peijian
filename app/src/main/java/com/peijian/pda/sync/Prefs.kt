@@ -3,6 +3,8 @@ package com.peijian.pda.sync
 import android.content.Context
 import android.os.Build
 import com.peijian.pda.barcode.BarcodeRules
+import com.peijian.pda.scan.Haptics
+import org.json.JSONObject
 
 /**
  * 本机配置：电脑端地址、配对令牌、操作员、条码分隔符等。
@@ -48,6 +50,22 @@ class Prefs(context: Context) {
     var pairedAt: Long
         get() = sp.getLong(KEY_PAIRED, 0)
         set(value) = sp.edit().putLong(KEY_PAIRED, value).apply()
+
+    /** 各扫码环节的声音/震动设置，JSON 存一份；缺字段回落到默认 */
+    var feedbackRaw: String
+        get() = sp.getString(KEY_FEEDBACK, "") ?: ""
+        set(value) = sp.edit().putString(KEY_FEEDBACK, value).apply()
+
+    fun feedbackSetting(stage: Haptics.Stage): Haptics.FeedbackSetting {
+        val root = runCatching { JSONObject(feedbackRaw) }.getOrNull()
+        return Haptics.FeedbackSetting.from(root?.optJSONObject(stage.key))
+    }
+
+    fun saveFeedback(all: Map<Haptics.Stage, Haptics.FeedbackSetting>) {
+        val root = JSONObject()
+        all.forEach { (stage, setting) -> root.put(stage.key, setting.toJson()) }
+        feedbackRaw = root.toString()
+    }
 
     fun isPaired(): Boolean = serverUrl.isNotBlank() && token.isNotBlank()
 
@@ -99,5 +117,6 @@ class Prefs(context: Context) {
         private const val KEY_REV = "last_rev"
         private const val KEY_LAST_SYNC = "last_sync_at"
         private const val KEY_PAIRED = "paired_at"
+        private const val KEY_FEEDBACK = "scan_feedback"
     }
 }

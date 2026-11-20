@@ -2,6 +2,7 @@ package com.peijian.pda.data
 
 import androidx.room.withTransaction
 import com.peijian.pda.barcode.BarcodeRules
+import com.peijian.pda.data.dao.BoxListRow
 import com.peijian.pda.data.dao.PartQtyRow
 import com.peijian.pda.data.entity.BoxStatus
 import com.peijian.pda.data.entity.BoxWithItems
@@ -10,6 +11,7 @@ import com.peijian.pda.data.entity.PackingItem
 import com.peijian.pda.data.entity.Shipment
 import com.peijian.pda.data.entity.ShipmentBox
 import com.peijian.pda.data.entity.ShipmentItem
+import com.peijian.pda.data.entity.ShipmentPlanBox
 import com.peijian.pda.data.entity.ShipmentStatus
 import com.peijian.pda.data.entity.StockCheck
 import com.peijian.pda.data.entity.StockCheckScan
@@ -195,6 +197,34 @@ class PackingRepository(private val db: AppDatabase) {
         const val AMBIGUOUS = "AMBIGUOUS"
         const val NO_SHIPMENT = "NO_SHIPMENT"
         const val NO_CHECK = "NO_CHECK"
+        const val WRONG_CUSTOMER = "WRONG_CUSTOMER"
+        const val NOT_IN_PLAN = "NOT_IN_PLAN"
+    }
+
+    /**
+     * 出库校验门禁（纯逻辑，便于 JVM 单测）：
+     *  1) 发货单填了客户编码时，箱客户编码必须一致（大小写/空白不敏感）；
+     *  2) 本单有预选清单时，箱必须在清单内；清单为空表示不启用该限制。
+     */
+    object OutboundGuard {
+        sealed interface Verdict {
+            data object Pass : Verdict
+            data class Reject(val status: String, val message: String) : Verdict
+        }
+
+        fun check(customerCode: String, planIds: Set<Long>, box: PackingBox): Verdict {
+            val want = customerCode.trim()
+            if (want.isNotEmpty() && !box.customerCode.trim().equals(want, ignoreCase = true)) {
+                return Verdict.Reject(
+                    ScanStatus.WRONG_CUSTOMER,
+                    "客户不符：本单 $want，该箱 ${box.customerCode}"
+                )
+            }
+            if (planIds.isNotEmpty() && box.id !in planIds) {
+                return Verdict.Reject(ScanStatus.NOT_IN_PLAN, "该箱不在本次预选清单里")
+            }
+            return Verdict.Pass
+        }
     }
 
     data class ScanResult(
@@ -206,6 +236,32 @@ class PackingRepository(private val db: AppDatabase) {
     )
 
     suspend fun openShipment(): Shipment? = shipments.openShipment()
+
+    /** 客户编码 → 客户名称（从数据源箱表里取） */
+    suspend fun customerNameOf(code: String): String? = packing.customerNameOf(code.trim())
+
+    /* 预选箱 */
+    suspend fun planBoxes(sid: Long): List<ShipmentPlanBox> = shipments.planBoxes(sid)
+
+    suspend fun addPlanBox(sid: Long, row: BoxListRow) {
+        shipments.insertPlanBox(
+            ShipmentPlanBox(
+                shipmentId = sid,
+                boxId = row.id,
+                barcode = row.barcode,
+                orderNo = row.orderNo,
+                boxNo = row.boxNo,
+                customerCode = row.customerCode,
+                customerName = row.customerName,
+                partSummary = row.partSummary,
+                totalQty = row.totalQty
+            )
+        )
+    }
+
+    suspend fun removePlanBox(sid: Long, boxId: Long) = shipments.deletePlanBox(sid, boxId)
+
+    suspend fun clearPlan(sid: Long) = shipments.clearPlanBoxes(sid)
 
     suspend fun createShipment(
         docNo: String,
@@ -234,6 +290,8 @@ class PackingRepository(private val db: AppDatabase) {
             if (shipment.status != ShipmentStatus.OPEN) return@withTransaction ScanResult(
                 ScanStatus.NO_SHIPMENT, code, message = "发货单已结束"
             )
+            // 预选清单（空 = 不启用限制）
+            val planIds = shipments.planBoxIds(shipmentId).toSet()
 
             when (val lookup = lookup(code)) {
                 is ScanLookup.NotFound -> ScanResult(ScanStatus.NOT_FOUND, code, message = "系统里没有这个箱码")
@@ -243,6 +301,13 @@ class PackingRepository(private val db: AppDatabase) {
                 )
                 is ScanLookup.Found -> {
                     val box = lookup.box
+                    // 门禁先于重复/状态判断：错客户、错箱直接拒绝并报警
+                    when (val verdict = OutboundGuard.check(shipment.customerCode, planIds, box)) {
+                        is OutboundGuard.Verdict.Reject -> return@withTransaction ScanResult(
+                            verdict.status, code, box, lookup.items, verdict.message
+                        )
+                        OutboundGuard.Verdict.Pass -> Unit
+                    }
                     if (shipments.findBox(shipmentId, box.id) != null) {
                         return@withTransaction ScanResult(
                             ScanStatus.DUPLICATE, code, box, lookup.items, "这一箱已经扫过"

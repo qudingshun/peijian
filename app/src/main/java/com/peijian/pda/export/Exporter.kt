@@ -112,7 +112,7 @@ object Exporter {
         return writeWithFallback(context, name) { file ->
             val rows = detail.map { d ->
                 listOf(
-                    d.docNo, DateText.dateTime(d.createdAt), d.customerCode, d.customerName, d.receiver,
+                    d.docNo, DateText.dateTime(d.createdAt), d.customerCode, d.customerName,
                     d.orderNo, d.boxNo, d.barcode, d.partCode, d.partName, d.englishName,
                     d.machineModel, d.quantity, d.operator
                 )
@@ -127,12 +127,12 @@ object Exporter {
                     XlsxWriter.Sheet(
                         "出库明细",
                         listOf(
-                            "发货单号", "出库时间", "客户编码", "客户名称", "收货人",
+                            "发货柜号", "出库时间", "客户编码", "客户名称",
                             "生产单号", "箱号", "箱码", "配件编码", "配件名称", "英文描述",
                             "整机型号", "数量", "操作员"
                         ),
                         rows,
-                        listOf(16, 18, 11, 28, 14, 11, 7, 26, 20, 26, 32, 24, 8, 10)
+                        listOf(16, 18, 11, 28, 11, 7, 26, 20, 26, 32, 24, 8, 10)
                     ),
                     XlsxWriter.Sheet(
                         "物料汇总",

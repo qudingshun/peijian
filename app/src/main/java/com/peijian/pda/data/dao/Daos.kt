@@ -13,6 +13,7 @@ import com.peijian.pda.data.entity.PackingItem
 import com.peijian.pda.data.entity.Shipment
 import com.peijian.pda.data.entity.ShipmentBox
 import com.peijian.pda.data.entity.ShipmentItem
+import com.peijian.pda.data.entity.ShipmentPlanBox
 import com.peijian.pda.data.entity.StockCheck
 import com.peijian.pda.data.entity.StockCheckItem
 import com.peijian.pda.data.entity.StockCheckScan
@@ -202,6 +203,13 @@ interface PackingDao {
     @Query("SELECT * FROM packing_box WHERE sourceKey=:key LIMIT 1")
     suspend fun findBySourceKey(key: String): PackingBox?
 
+    /** 按客户编码从数据源（已导入的箱）取客户名称；同一编码多行取最新一条 */
+    @Query(
+        "SELECT customerName FROM packing_box WHERE customerCode=:code AND customerName<>'' " +
+            "ORDER BY importedAt DESC, id DESC LIMIT 1"
+    )
+    suspend fun customerNameOf(code: String): String?
+
     @Query("SELECT * FROM packing_box WHERE id=:id")
     suspend fun findById(id: Long): PackingBox?
 
@@ -318,6 +326,26 @@ interface PackingDao {
 
     @Query("SELECT COUNT(*) FROM packing_box WHERE status='IN_STOCK' AND importedAt>=:since")
     suspend fun newStockSince(since: Long): Int
+
+    /**
+     * 预选箱候选：在库箱，可按客户编码/搜索词过滤。
+     * customerCode 为空表示不限客户；搜索词匹配箱码/单号/配件。
+     */
+    @Query(
+        "SELECT b.id AS id, b.barcode AS barcode, b.customerCode AS customerCode, " +
+            "b.customerName AS customerName, b.orderNo AS orderNo, b.boxNo AS boxNo, " +
+            "b.status AS status, b.packDate AS packDate, " +
+            "COALESCE((SELECT GROUP_CONCAT(i.partCode || ' ' || i.partName) FROM packing_item i WHERE i.boxId=b.id),'') AS partSummary, " +
+            "COALESCE((SELECT SUM(i.quantity) FROM packing_item i WHERE i.boxId=b.id),0) AS totalQty " +
+            "FROM packing_box b " +
+            "WHERE b.status='IN_STOCK' AND (:customerCode='' OR b.customerCode=:customerCode) AND (" +
+            ":q='' OR b.orderNo LIKE '%'||:q||'%' OR b.barcodeNorm LIKE '%'||:q||'%' " +
+            "OR b.customerName LIKE '%'||:q||'%' OR b.boxNo=:q " +
+            "OR EXISTS(SELECT 1 FROM packing_item i WHERE i.boxId=b.id AND " +
+            "(i.partCode LIKE '%'||:q||'%' OR i.partName LIKE '%'||:q||'%'))) " +
+            "ORDER BY b.packDate DESC, b.orderNo DESC, b.boxNo+0, b.boxNo LIMIT :limit"
+    )
+    fun observePlanCandidates(customerCode: String, q: String, limit: Int): Flow<List<BoxListRow>>
 
     @Query("SELECT * FROM packing_box WHERE status='IN_STOCK'")
     suspend fun allInStockBoxes(): List<PackingBox>
@@ -450,6 +478,28 @@ interface ShipmentDao {
 
     @Query("SELECT * FROM shipment_item WHERE shipmentBoxId=:shipmentBoxId")
     suspend fun itemsOfShipmentBox(shipmentBoxId: Long): List<ShipmentItem>
+
+    /* 预选箱（本次发货白名单） */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPlanBox(box: ShipmentPlanBox): Long
+
+    @Query("DELETE FROM shipment_plan_box WHERE shipmentId=:sid AND boxId=:boxId")
+    suspend fun deletePlanBox(sid: Long, boxId: Long)
+
+    @Query("DELETE FROM shipment_plan_box WHERE shipmentId=:sid")
+    suspend fun clearPlanBoxes(sid: Long)
+
+    @Query("SELECT * FROM shipment_plan_box WHERE shipmentId=:sid ORDER BY addedAt, id")
+    fun observePlanBoxes(sid: Long): Flow<List<ShipmentPlanBox>>
+
+    @Query("SELECT * FROM shipment_plan_box WHERE shipmentId=:sid ORDER BY addedAt, id")
+    suspend fun planBoxes(sid: Long): List<ShipmentPlanBox>
+
+    @Query("SELECT boxId FROM shipment_plan_box WHERE shipmentId=:sid")
+    suspend fun planBoxIds(sid: Long): List<Long>
+
+    @Query("SELECT COUNT(*) FROM shipment_plan_box WHERE shipmentId=:sid")
+    suspend fun planBoxCount(sid: Long): Int
 }
 
 /* ---------------- 盘点 ---------------- */

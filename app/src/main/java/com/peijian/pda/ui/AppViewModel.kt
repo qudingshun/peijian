@@ -10,6 +10,7 @@ import com.peijian.pda.PeijianApp
 import com.peijian.pda.backup.DbBackup
 import com.peijian.pda.data.PackingRepository
 import com.peijian.pda.data.dao.BoxListRow
+import com.peijian.pda.data.entity.ShipmentPlanBox
 import com.peijian.pda.data.dao.ShipmentRow
 import com.peijian.pda.data.dao.StockScanRow
 import com.peijian.pda.data.entity.BoxStatus
@@ -20,6 +21,7 @@ import com.peijian.pda.export.Exporter
 import com.peijian.pda.importer.PackingImporter
 import com.peijian.pda.logic.DateText
 import com.peijian.pda.scan.Haptics
+import com.peijian.pda.scan.Haptics.Stage as FeedbackStage
 import com.peijian.pda.sync.SyncClient
 import com.peijian.pda.sync.SyncRepository
 import com.peijian.pda.sync.SyncException
@@ -50,7 +52,8 @@ data class SettingsState(
     val separator: String = "-",
     val duplicatePolicy: String = PackingImporter.DuplicatePolicy.MERGE,
     val lastRev: Long = 0,
-    val lastSyncAt: Long = 0
+    val lastSyncAt: Long = 0,
+    val feedback: Map<FeedbackStage, Haptics.FeedbackSetting> = Haptics.defaults
 )
 
 data class UiEvent(val text: String, val ok: Boolean = true, val restart: Boolean = false)
@@ -99,7 +102,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         separator = prefs.separator,
         duplicatePolicy = prefs.duplicatePolicy,
         lastRev = prefs.lastRev,
-        lastSyncAt = prefs.lastSyncAt
+        lastSyncAt = prefs.lastSyncAt,
+        feedback = FeedbackStage.entries.associateWith { prefs.feedbackSetting(it) }
     )
 
     fun saveSettings(
@@ -118,6 +122,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.duplicatePolicy = duplicatePolicy
         _settings.value = readSettings()
         emit("设置已保存")
+    }
+
+    fun saveFeedback(all: Map<FeedbackStage, Haptics.FeedbackSetting>) {
+        prefs.saveFeedback(all)
+        _settings.value = readSettings()
+        emit("扫码反馈设置已保存")
     }
 
     fun applyPairing(text: String) {
@@ -173,6 +183,60 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _lastScan = MutableStateFlow<PackingRepository.ScanResult?>(null)
     val lastScan: StateFlow<PackingRepository.ScanResult?> = _lastScan.asStateFlow()
 
+    /* 预选箱：候选在库箱 + 本单已勾选 */
+    private val _planQuery = MutableStateFlow("")
+    val planQuery: StateFlow<String> = _planQuery.asStateFlow()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val planCandidates: StateFlow<List<BoxListRow>> =
+        combine(_planQuery, _openShipment) { q, s -> q.trim() to (s?.customerCode ?: "") }
+            .flatMapLatest { (q, code) -> packingDao.observePlanCandidates(code, q, 300) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(3000), emptyList())
+
+    private val _planBoxes = MutableStateFlow<List<ShipmentPlanBox>>(emptyList())
+    val planBoxes: StateFlow<List<ShipmentPlanBox>> = _planBoxes.asStateFlow()
+
+    fun setPlanQuery(q: String) { _planQuery.value = q }
+
+    /** 输入客户编码后从数据源取客户名称；返回 null 表示数据源里没有 */
+    suspend fun lookupCustomerName(code: String): String? = withContext(Dispatchers.IO) {
+        repo.customerNameOf(code)
+    }
+
+    private var planJob: Job? = null
+
+    private fun refreshPlan(sid: Long?) {
+        planJob?.cancel()
+        if (sid == null) {
+            _planBoxes.value = emptyList()
+            return
+        }
+        planJob = viewModelScope.launch {
+            shipmentDao.observePlanBoxes(sid).collect { _planBoxes.value = it }
+        }
+    }
+
+    fun togglePlanBox(row: BoxListRow) {
+        val s = _openShipment.value ?: return
+        viewModelScope.launch {
+            if (_planBoxes.value.any { it.boxId == row.id }) {
+                repo.removePlanBox(s.id, row.id)
+                emit("已取消预选：${row.orderNo} 箱${row.boxNo}")
+            } else {
+                repo.addPlanBox(s.id, row)
+                emit("已预选：${row.orderNo} 箱${row.boxNo}")
+            }
+        }
+    }
+
+    fun clearPlan() {
+        val s = _openShipment.value ?: return
+        viewModelScope.launch {
+            repo.clearPlan(s.id)
+            emit("已清空预选箱（恢复为不限制）")
+        }
+    }
+
     val shipments = shipmentDao.observeShipments(200)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(3000), emptyList())
 
@@ -204,7 +268,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (open != null) {
                 _openShipment.value = open
                 refreshShipment(open.id)
-                emit("已有一张未结束的发货单：${open.docNo}", ok = false)
+                refreshPlan(open.id)
+                emit("已有一张未结束的发货柜：${open.docNo}", ok = false)
                 return@launch
             }
             val id = repo.createShipment(
@@ -218,7 +283,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = shipmentDao.findById(id)
             _openShipment.value = s
             refreshShipment(id)
-            emit("发货单已建立")
+            refreshPlan(id)
+            emit("发货柜已建立")
         }
     }
 
@@ -227,6 +293,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = repo.openShipment()
             _openShipment.value = s
             refreshShipment(s?.id)
+            refreshPlan(s?.id)
             val c = repo.openCheck()
             _openCheck.value = c
             refreshCheck(c?.id)
@@ -244,16 +311,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _lastScan.value = r
             when (r.status) {
                 PackingRepository.ScanStatus.OK -> {
-                    Haptics.success(getApplication())
+                    feedback(FeedbackStage.SUCCESS)
                     val qty = r.items.sumOf { it.quantity }
                     emit("✓ ${r.box?.orderNo} 箱${r.box?.boxNo}  ${r.items.size} 种 / $qty 件")
                 }
                 else -> {
-                    Haptics.failure(getApplication())
+                    feedback(feedbackStageOf(r.status))
                     emit(r.message.ifBlank { "扫码失败" }, ok = false)
                 }
             }
         }
+    }
+
+    private fun feedback(stage: FeedbackStage) {
+        Haptics.feedback(getApplication(), stage, _settings.value.feedback[stage])
+    }
+
+    private fun feedbackStageOf(status: String): FeedbackStage = when (status) {
+        PackingRepository.ScanStatus.DUPLICATE -> FeedbackStage.DUPLICATE
+        PackingRepository.ScanStatus.NOT_FOUND -> FeedbackStage.NOT_FOUND
+        PackingRepository.ScanStatus.ALREADY_SHIPPED -> FeedbackStage.ALREADY_SHIPPED
+        PackingRepository.ScanStatus.AMBIGUOUS -> FeedbackStage.AMBIGUOUS
+        PackingRepository.ScanStatus.WRONG_CUSTOMER -> FeedbackStage.WRONG_CUSTOMER
+        PackingRepository.ScanStatus.NOT_IN_PLAN -> FeedbackStage.NOT_IN_PLAN
+        else -> FeedbackStage.NOT_FOUND
     }
 
     fun removeShipmentBox(shipmentBoxId: Long) {
@@ -270,6 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 emit("发货完成：${s.docNo}")
                 _openShipment.value = null
                 _shipmentBoxes.value = emptyList()
+                _planBoxes.value = emptyList()
                 _lastScan.value = null
             } else {
                 emit("至少扫一箱才能完成", ok = false)
@@ -281,11 +363,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = _openShipment.value ?: return
         viewModelScope.launch {
             if (repo.cancelShipment(s.id)) {
-                emit("发货单已取消，箱回到在库")
+                repo.clearPlan(s.id)
+                emit("发货柜已取消，箱回到在库")
                 _openShipment.value = null
                 _shipmentBoxes.value = emptyList()
+                _planBoxes.value = emptyList()
                 _lastScan.value = null
-            } else emit("取消失败（已完成的发货单不能取消）", ok = false)
+            } else emit("取消失败（已完成的发货柜不能取消）", ok = false)
         }
     }
 
@@ -343,16 +427,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _lastScan.value = r
             when (r.status) {
                 PackingRepository.ScanStatus.OK -> {
-                    Haptics.success(getApplication())
+                    feedback(FeedbackStage.SUCCESS)
                     emit("✓ 已盘 ${r.box?.orderNo} 箱${r.box?.boxNo}")
                 }
                 PackingRepository.ScanStatus.ALREADY_SHIPPED,
                 PackingRepository.ScanStatus.NOT_FOUND -> {
-                    Haptics.failure(getApplication())
+                    feedback(feedbackStageOf(r.status))
                     emit(r.message, ok = false)
                 }
                 else -> {
-                    Haptics.failure(getApplication())
+                    feedback(feedbackStageOf(r.status))
                     emit(r.message.ifBlank { "扫码失败" }, ok = false)
                 }
             }
