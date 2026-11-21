@@ -227,6 +227,16 @@ class PackingRepository(private val db: AppDatabase) {
         }
     }
 
+    /**
+     * 撤销资格（纯逻辑，便于 JVM 单测）：
+     * 仅"已打包 FINISHED 且尚未上传（syncedAt 为空）"的发货单可撤销。
+     * 已上传单不可撤销——服务端已落库，本地删单只会丢追溯、且无法回退服务端状态。
+     */
+    object DiscardGuard {
+        fun canDiscard(status: String, syncedAt: Long?): Boolean =
+            status == ShipmentStatus.FINISHED && syncedAt == null
+    }
+
     data class ScanResult(
         val status: String,
         val code: String,
@@ -378,6 +388,24 @@ class PackingRepository(private val db: AppDatabase) {
         shipments.revertBoxesOf(id, System.currentTimeMillis())
         shipments.deleteItemsOf(id)
         shipments.deleteBoxesOf(id)
+        shipments.deleteShipment(id)
+        true
+    }
+
+    /**
+     * 撤销一张已打包（FINISHED）但尚未上传的发货单。
+     * 删除单据及其箱/明细/预选箱，并把关联箱回退到在库。
+     * 已上传（syncedAt != null）的单不可撤销：服务端已有该单与 SHIPPED 箱，
+     * 本地删除只会丢失追溯记录、无法回退服务端状态，因此拒绝。
+     */
+    suspend fun discardShipment(id: Long): Boolean = db.withTransaction {
+        val s = shipments.findById(id) ?: return@withTransaction false
+        if (!DiscardGuard.canDiscard(s.status, s.syncedAt)) return@withTransaction false
+        val at = System.currentTimeMillis()
+        shipments.revertBoxesOf(id, at)
+        shipments.deleteItemsOf(id)
+        shipments.deleteBoxesOf(id)
+        shipments.clearPlanBoxes(id)
         shipments.deleteShipment(id)
         true
     }

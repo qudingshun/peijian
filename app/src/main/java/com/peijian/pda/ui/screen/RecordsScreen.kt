@@ -24,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +42,8 @@ import com.peijian.pda.ui.EmptyHint
 @Composable
 fun RecordsScreen(vm: AppViewModel) {
     var tab by remember { mutableIntStateOf(0) }
+    // 待撤销的发货单（id, docNo）；确认后才真正删除
+    var pendingDiscard by remember { mutableStateOf<Pair<Long, String>?>(null) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
             listOf("箱查询", "发货记录", "盘点记录").forEachIndexed { i, title ->
@@ -49,9 +52,34 @@ fun RecordsScreen(vm: AppViewModel) {
         }
         when (tab) {
             0 -> BoxSearchTab(vm)
-            1 -> ShipmentRecordsTab(vm)
+            1 -> ShipmentRecordsTab(vm, onDiscard = { id, doc -> pendingDiscard = id to doc })
             else -> CheckRecordsTab(vm)
         }
+    }
+
+    if (pendingDiscard != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDiscard = null },
+            title = { Text("撤销发货柜", fontSize = 15.sp) },
+            text = {
+                Text(
+                    "确认撤销「${pendingDiscard!!.second}」？\n" +
+                        "该柜尚未上传，撤销后其中的箱会回到在库状态，本机不再保留这张发货柜。\n" +
+                        "若已经点过上传，请勿撤销（已上传的柜不显示此按钮）。",
+                    fontSize = 12.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val (id, doc) = pendingDiscard!!
+                    vm.discardShipment(id, doc)
+                    pendingDiscard = null
+                }) { Text("确认撤销") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDiscard = null }) { Text("取消") }
+            }
+        )
     }
 
     val detail by vm.boxDetail.collectAsStateWithLifecycle()
@@ -163,7 +191,7 @@ private fun BoxSearchTab(vm: AppViewModel) {
 }
 
 @Composable
-private fun ShipmentRecordsTab(vm: AppViewModel) {
+private fun ShipmentRecordsTab(vm: AppViewModel, onDiscard: (Long, String) -> Unit) {
     val shipments by vm.shipments.collectAsStateWithLifecycle()
     if (shipments.isEmpty()) {
         EmptyHint("还没有发货记录")
@@ -192,7 +220,14 @@ private fun ShipmentRecordsTab(vm: AppViewModel) {
                         )
                     }
                     if (s.status == "FINISHED") {
-                        OutlinedButton(onClick = { vm.exportShipment(s.id) }) { Text("导出", fontSize = 12.sp) }
+                        Column(horizontalAlignment = Alignment.End) {
+                            OutlinedButton(onClick = { vm.exportShipment(s.id) }) { Text("导出", fontSize = 12.sp) }
+                            if (s.syncedAt == null) {
+                                TextButton(onClick = { onDiscard(s.id, s.docNo) }) {
+                                    Text("撤销未上传", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
                     }
                 }
             }

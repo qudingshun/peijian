@@ -373,6 +373,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 撤销已打包但未上传的发货单（按 id，不依赖 _openShipment） */
+    fun discardShipment(id: Long, docNo: String) {
+        viewModelScope.launch {
+            if (repo.discardShipment(id)) {
+                emit("发货柜 $docNo 已撤销，关联箱已回到在库")
+                // 若恰好正在查看这张单，清空相关状态
+                if (_openShipment.value?.id == id) {
+                    _openShipment.value = null
+                    _shipmentBoxes.value = emptyList()
+                    _planBoxes.value = emptyList()
+                    _lastScan.value = null
+                }
+            } else emit("撤销失败：仅可撤销已打包且未上传的发货柜", ok = false)
+        }
+    }
+
     /* ---------------- 盘点 ---------------- */
 
     private val _openCheck = MutableStateFlow<StockCheck?>(null)
