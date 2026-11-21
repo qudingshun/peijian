@@ -39,6 +39,23 @@ class HtmlEscapeTest(unittest.TestCase):
         self.assertTrue(src.startswith("/api/v1/label.png?"))
 
 
+class TokenMatchTest(unittest.TestCase):
+    def test_exact_and_case_insensitive(self):
+        self.assertTrue(server.token_matches("AbCdEf123", "AbCdEf123"))
+        self.assertTrue(server.token_matches("abcdef123", "AbCdEf123"))
+        self.assertTrue(server.token_matches("ABCDEF123", "AbCdEf123"))
+
+    def test_whitespace_trimmed(self):
+        self.assertTrue(server.token_matches("  AbCdEf123  ", "AbCdEf123"))
+        self.assertTrue(server.token_matches("ThaY-fxQUn4", "ThaY-fxQUN4"))
+
+    def test_wrong_or_empty_rejected(self):
+        self.assertFalse(server.token_matches("wrong", "AbCdEf123"))
+        self.assertFalse(server.token_matches("", "AbCdEf123"))
+        self.assertFalse(server.token_matches(None, "AbCdEf123"))
+        self.assertFalse(server.token_matches("   ", "AbCdEf123"))
+
+
 class DbConnectionCloseTest(unittest.TestCase):
     def setUp(self):
         self._orig_db_path = server.DB_PATH

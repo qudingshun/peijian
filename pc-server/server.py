@@ -537,9 +537,16 @@ def ensure_fresh() -> None:
 
 # ---------------------------------------------------------------- 鉴权
 
+def token_matches(given: str | None, expected: str) -> bool:
+    """令牌比对：忽略首尾空白与大小写，避免手抄大小写错误导致 401。"""
+    if not given:
+        return False
+    return given.strip().casefold() == expected.strip().casefold()
+
+
 def check_token(request: Request) -> None:
     given = request.headers.get("X-Sync-Token") or request.query_params.get("token")
-    if given != TOKEN:
+    if not token_matches(given, TOKEN):
         raise HTTPException(401, "配对令牌不对")
 
 
