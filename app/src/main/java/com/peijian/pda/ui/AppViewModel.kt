@@ -115,7 +115,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         duplicatePolicy: String
     ) {
         prefs.serverUrl = serverUrl
-        prefs.token = token
+        prefs.token = token.trim()
         prefs.operator = operator
         prefs.deviceName = deviceName
         prefs.separator = separator
@@ -483,6 +483,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 else "收到 ${r.received} 箱：新增 ${r.inserted}，更新 ${r.updated}，配件明细 ${r.items} 行" +
                     if (r.pages > 1) "（分 ${r.pages} 页）" else ""
             )
+        }
+    }
+
+    /** 对账：上报本机箱摘要，取回服务端权威数据修复差箱/状态分歧。 */
+    fun reconcile() {
+        runBusy("正在与电脑对账…") {
+            val r = syncRepo.reconcile()
+            _settings.value = readSettings()
+            val head = "对账完成：本机 ${r.clientCount} / 电脑 ${r.serverCount} 箱，服务版本 ${r.serverRev}"
+            val detail = buildList {
+                if (r.missing > 0) add("补入 ${r.missing} 箱")
+                if (r.stale > 0) add("刷新 ${r.stale} 箱")
+                if (r.extra > 0) add("作废 ${r.voided} 箱${if (r.skippedVoid > 0) "（${r.skippedVoid} 箱有未传单据已跳过）" else ""}")
+                if (r.applied > 0) add("共写入 ${r.applied} 箱")
+            }
+            emit(if (detail.isEmpty()) "$head，两端一致" else "$head；${detail.joinToString("、")}")
         }
     }
 

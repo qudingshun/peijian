@@ -14,12 +14,19 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 open class SyncException(message: String) : Exception(message)
 
 /** 服务端 409：本单里有箱已被其他设备发出、不存在或同码多箱，需要用户核实后重扫。 */
 class ConflictException(message: String) : SyncException(message)
+
+/** 连不上电脑：把底层网络异常翻译成可操作的中文提示。 */
+class ConnectionException(message: String) : SyncException(message)
 
 /**
  * 与电脑端「配件同步服务」通信。
@@ -51,18 +58,44 @@ class SyncClient(private val prefs: Prefs) {
         return url
     }
 
+    /**
+     * 把网络层异常翻译成可操作的中文提示；业务异常（SyncException）原样透传。
+     * 关键：区分「连不上」与「令牌错/服务异常」，避免一律报「连接失败」。
+     */
+    private inline fun <T> diagnose(block: () -> T): T = try {
+        block()
+    } catch (e: SyncException) {
+        throw e
+    } catch (e: UnknownHostException) {
+        throw ConnectionException("找不到电脑地址，请检查地址和 WiFi 是否正确")
+    } catch (e: SocketTimeoutException) {
+        throw ConnectionException(
+            "连接电脑超时（${base()}）。常见原因：电脑和 PDA 不在同一网段、电脑防火墙未放行 8000 端口，或服务没启动"
+        )
+    } catch (e: ConnectException) {
+        throw ConnectionException(
+            "连不上电脑（${base()}）。请确认：① 电脑已双击启动同步服务 ② 两者连同一个 WiFi ③ 防火墙已放行 8000 端口"
+        )
+    } catch (e: IOException) {
+        throw ConnectionException("网络中断（${base()}）：${e.message ?: "请检查 WiFi 连接"}")
+    }
+
     suspend fun health(): String = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url("${base()}/api/v1/health").get().build()
-        http.newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw SyncException("连接失败 HTTP ${resp.code}")
-            val o = JSONObject(body)
-            if (!o.optBoolean("ok", false)) throw SyncException(o.optString("error", "服务返回异常"))
-            "${o.optString("app", "peijian-sync")} ${o.optString("version", "")} @ ${o.optString("time", "")}"
+        diagnose {
+            val req = Request.Builder().url("${base()}/api/v1/health").get().build()
+            http.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw SyncException("连接失败 HTTP ${resp.code}：请确认打开的是本系统同步服务")
+                val o = runCatching { JSONObject(body) }.getOrNull()
+                    ?: throw SyncException("服务返回的不是本系统（HTTP ${resp.code}），请检查地址端口")
+                if (!o.optBoolean("ok", false)) throw SyncException(o.optString("error", "服务返回异常"))
+                "${o.optString("app", "peijian-sync")} ${o.optString("version", "")} @ ${o.optString("time", "")}"
+            }
         }
     }
 
     suspend fun pull(since: Long, limit: Int = 0, afterKey: String = ""): PullResult = withContext(Dispatchers.IO) {
+      diagnose {
         val after = if (afterKey.isEmpty()) "" else
             "&after_key=${java.net.URLEncoder.encode(afterKey, "UTF-8")}"
         val req = Request.Builder()
@@ -126,6 +159,7 @@ class SyncClient(private val prefs: Prefs) {
                 nextAfterKey = o.optString("next_after_key", "")
             )
         }
+      }
     }
 
     data class DigestInput(val boxNorm: String, val rev: Long, val status: String)
@@ -143,6 +177,7 @@ class SyncClient(private val prefs: Prefs) {
 
     /** 上报本机全部箱摘要，取回两端差异；只读接口，不改变服务端状态。 */
     suspend fun reconcile(digests: List<DigestInput>): ReconcileResult = withContext(Dispatchers.IO) {
+      diagnose {
         val root = JSONObject()
         val arr = JSONArray()
         for (d in digests) {
@@ -224,6 +259,7 @@ class SyncClient(private val prefs: Prefs) {
                 changedBoxes = changed
             )
         }
+      }
     }
 
     suspend fun pushShipment(
@@ -295,7 +331,7 @@ class SyncClient(private val prefs: Prefs) {
         post("/api/v1/stockchecks", root)
     }
 
-    private fun post(path: String, body: JSONObject) {
+    private fun post(path: String, body: JSONObject) = diagnose {
         val req = Request.Builder()
             .url(base() + path)
             .header("X-Sync-Token", prefs.token)
