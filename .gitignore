@@ -48,6 +48,8 @@ usage.txt
 /.workbuddy/
 # 临时验证产物（备份副本、payload、截图等，不入库）
 /.tmp_t/
+# 操作说明书生成脚本与临时素材（不入库）
+/.tmp_manual/
 
 # ===== Python（配套脚本/服务端）=====
 __pycache__/
