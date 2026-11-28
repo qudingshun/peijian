@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
@@ -103,6 +104,11 @@ fun HomeScreen(vm: AppViewModel, onNavigate: (Screen) -> Unit, onSettings: () ->
             }
             QuickAction(Icons.Filled.Settings, "设置", "条码/操作员/服务器", Modifier.weight(1f)) {
                 onSettings()
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            QuickAction(Icons.Filled.Info, "关于/版权", "版本与版权信息", Modifier.weight(1f)) {
+                onNavigate(Screen.ABOUT)
             }
         }
 

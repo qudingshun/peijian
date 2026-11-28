@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.peijian.pda.ui.screen.AboutScreen
 import com.peijian.pda.ui.screen.ExportScreen
 import com.peijian.pda.ui.screen.HomeScreen
 import com.peijian.pda.ui.screen.OutboundScreen
@@ -54,7 +55,8 @@ enum class Screen(val title: String) {
     EXPORT("导出报表"),
     RECORDS("记录与查询"),
     SETTINGS("设置"),
-    SYNC("数据同步")
+    SYNC("数据同步"),
+    ABOUT("关于/版权")
 }
 
 @Composable
@@ -98,9 +100,10 @@ fun AppRoot(vm: AppViewModel) {
                     Screen.HOME -> "售后配件 · 出库 / 盘点 / 报表"
                     Screen.OUTBOUND -> vm.openShipment.value?.docNo ?: "扫描箱码登记发出"
                     Screen.STOCKTAKE -> vm.openCheck.value?.batchNo ?: "扫描箱码核对在库"
+                    Screen.ABOUT -> "版本与版权信息"
                     else -> null
                 },
-                onBack = if (screen == Screen.SETTINGS || screen == Screen.SYNC) ({ screen = Screen.HOME }) else null,
+                onBack = if (screen == Screen.SETTINGS || screen == Screen.SYNC || screen == Screen.ABOUT) ({ screen = Screen.HOME }) else null,
                 actions = {
                     if (screen == Screen.HOME) {
                         IconButton(onClick = { screen = Screen.SETTINGS }) {
@@ -130,6 +133,7 @@ fun AppRoot(vm: AppViewModel) {
                 Screen.RECORDS -> RecordsScreen(vm)
                 Screen.SETTINGS -> SettingsScreen(vm)
                 Screen.SYNC -> SyncScreen(vm)
+                Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.HOME })
             }
 
             if (busy) {

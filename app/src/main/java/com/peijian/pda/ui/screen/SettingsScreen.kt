@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.peijian.pda.BuildConfig
 import com.peijian.pda.barcode.BarcodeRules
 import com.peijian.pda.importer.PackingImporter
 import com.peijian.pda.scan.Haptics
@@ -202,7 +203,7 @@ fun SettingsScreen(vm: AppViewModel) {
         ) { Text("保存设置") }
 
         SectionCard("关于") {
-            Text("配件管理 PDA  v0.1.0", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text("配件管理 PDA  v${BuildConfig.VERSION_NAME}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             Text(
                 "Android 手持 + 电脑端同步服务；数据格式参考「配件记录.xlsx / 打包记录」。",
                 fontSize = 10.sp,
