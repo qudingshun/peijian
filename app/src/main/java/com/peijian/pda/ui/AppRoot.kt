@@ -1,5 +1,6 @@
 package com.peijian.pda.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,10 +14,8 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -39,7 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.peijian.pda.ui.screen.AboutScreen
+import com.peijian.pda.ui.screen.DashboardScreen
 import com.peijian.pda.ui.screen.ExportScreen
 import com.peijian.pda.ui.screen.HomeScreen
 import com.peijian.pda.ui.screen.OutboundScreen
@@ -50,18 +49,20 @@ import com.peijian.pda.ui.screen.SyncScreen
 
 enum class Screen(val title: String) {
     HOME("配件管理"),
+    DASHBOARD("数据看板"),
     OUTBOUND("扫码出库"),
     STOCKTAKE("库存盘点"),
     EXPORT("导出报表"),
     RECORDS("记录与查询"),
     SETTINGS("设置"),
-    SYNC("数据同步"),
-    ABOUT("关于/版权")
+    SYNC("数据同步")
 }
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+    // 物理返回键：子页回首页；首页本身交给系统处理
+    BackHandler(enabled = screen != Screen.HOME) { screen = Screen.HOME }
     val snackbar = remember { SnackbarHostState() }
     val current = rememberUpdatedState(screen)
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -93,33 +94,30 @@ fun AppRoot(vm: AppViewModel) {
     }
 
     Scaffold(
+        // 首页参照 saoma：不带顶栏/底栏，由首页按钮进入各功能；子页保留顶栏与返回箭头
         topBar = {
-            AppTopBar(
-                title = screen.title,
-                subtitle = when (screen) {
-                    Screen.HOME -> "售后配件 · 出库 / 盘点 / 报表"
-                    Screen.OUTBOUND -> vm.openShipment.value?.docNo ?: "扫描箱码登记发出"
-                    Screen.STOCKTAKE -> vm.openCheck.value?.batchNo ?: "扫描箱码核对在库"
-                    Screen.ABOUT -> "版本与版权信息"
-                    else -> null
-                },
-                onBack = if (screen == Screen.SETTINGS || screen == Screen.SYNC || screen == Screen.ABOUT) ({ screen = Screen.HOME }) else null,
-                actions = {
-                    if (screen == Screen.HOME) {
-                        IconButton(onClick = { screen = Screen.SETTINGS }) {
-                            Icon(Icons.Filled.Settings, contentDescription = "设置")
-                        }
-                    }
-                }
-            )
+            if (screen != Screen.HOME) {
+                AppTopBar(
+                    title = screen.title,
+                    subtitle = when (screen) {
+                        Screen.DASHBOARD -> "本机库存与同步概览"
+                        Screen.OUTBOUND -> vm.openShipment.value?.docNo ?: "扫描箱码登记发出"
+                        Screen.STOCKTAKE -> vm.openCheck.value?.batchNo ?: "扫描箱码核对在库"
+                        else -> null
+                    },
+                    onBack = { screen = Screen.HOME }
+                )
+            }
         },
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                BottomItem(Screen.HOME, Icons.Filled.Home, screen) { screen = it }
-                BottomItem(Screen.OUTBOUND, Icons.Filled.QrCodeScanner, screen) { screen = it }
-                BottomItem(Screen.STOCKTAKE, Icons.Filled.Checklist, screen) { screen = it }
-                BottomItem(Screen.EXPORT, Icons.Filled.FileDownload, screen) { screen = it }
-                BottomItem(Screen.RECORDS, Icons.Filled.History, screen) { screen = it }
+            if (screen != Screen.HOME) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                    BottomItem(Screen.HOME, Icons.Filled.Home, screen) { screen = it }
+                    BottomItem(Screen.OUTBOUND, Icons.Filled.QrCodeScanner, screen) { screen = it }
+                    BottomItem(Screen.STOCKTAKE, Icons.Filled.Checklist, screen) { screen = it }
+                    BottomItem(Screen.EXPORT, Icons.Filled.FileDownload, screen) { screen = it }
+                    BottomItem(Screen.RECORDS, Icons.Filled.History, screen) { screen = it }
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) }
@@ -127,13 +125,13 @@ fun AppRoot(vm: AppViewModel) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (screen) {
                 Screen.HOME -> HomeScreen(vm, onNavigate = { screen = it }, onSettings = { screen = Screen.SETTINGS })
+                Screen.DASHBOARD -> DashboardScreen(vm)
                 Screen.OUTBOUND -> OutboundScreen(vm)
                 Screen.STOCKTAKE -> StocktakeScreen(vm)
                 Screen.EXPORT -> ExportScreen(vm)
                 Screen.RECORDS -> RecordsScreen(vm)
                 Screen.SETTINGS -> SettingsScreen(vm)
                 Screen.SYNC -> SyncScreen(vm)
-                Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.HOME })
             }
 
             if (busy) {
